@@ -17,22 +17,30 @@ function Set-LogFilePath {
 }
 
 function Write-Log {
-    param([string]$Message)
+    param(
+        [string]$Message,
+        [switch]$NoConsole,
+        [switch]$NoFile
+    )
 
     # Timestamped log entry
     $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     $entry = "[$timestamp] $Message"
 
-    # Write to console
-    Write-Host $Message
-
-    # Write to file
-    $logDirectory = Split-Path -Path $script:LogFile -Parent
-    if (-not (Test-Path -Path $logDirectory)) {
-        New-Item -ItemType Directory -Path $logDirectory -Force -WhatIf:$false -Confirm:$false | Out-Null
+    if (-not $NoConsole) {
+        # Write to console
+        Write-Host $Message
     }
 
-    Add-Content -Path $script:LogFile -Value $entry -WhatIf:$false -Confirm:$false
+    if (-not $NoFile) {
+        # Write to file
+        $logDirectory = Split-Path -Path $script:LogFile -Parent
+        if (-not (Test-Path -Path $logDirectory)) {
+            New-Item -ItemType Directory -Path $logDirectory -Force -WhatIf:$false -Confirm:$false | Out-Null
+        }
+
+        Add-Content -Path $script:LogFile -Value $entry -WhatIf:$false -Confirm:$false
+    }
 }
 
 Export-ModuleMember -Function Write-Log, Set-LogFilePath

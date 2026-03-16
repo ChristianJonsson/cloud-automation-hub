@@ -54,12 +54,12 @@ Options:
         Show this help text.
 
 Notes:
-    - Skipped users are always exported to:
+    - Skipped users are exported only when one or more skipped candidates exist:
         .\Review_Skipped_Users\SkippedUsers-<timestamp>.csv
-    - Preview exports (DryRun/WhatIf) are written to:
+    - Preview exports (DryRun/WhatIf) are written only when matching candidates exist:
         .\Review_Would_Update_Members\WouldUpdateMembers-<timestamp>.csv
         .\Review_Would_Update_Guests\WouldUpdateGuests-<timestamp>.csv
-        - Log entries are written to .\Logs\UserUpdate.log for preview and non-preview runs.
+    - Log entries are written to .\Logs\UserUpdate.log for preview and non-preview runs.
     - Cached Graph data reuse is in-memory only and applies to the current PowerShell session.
       If cached values are not present or do not match expected structure, live Graph queries are used.
     - Guest writes can have broader policy impact. Use -DryRun or -WhatIf first.
@@ -247,26 +247,42 @@ foreach ($skipped in $skippedCandidates) {
     Write-Log("Skipped $($skipped.User.UserPrincipalName): $($skipped.Reason)")
 }
 
-$skippedExport = $skippedCandidates | ForEach-Object {
-    New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType ''
+if ($skippedCandidates.Count -gt 0) {
+    $skippedExport = $skippedCandidates | ForEach-Object {
+        New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType ''
+    }
+
+    $skippedExport | Export-Csv -Path $skippedExportPath -NoTypeInformation -Encoding UTF8
+    Write-Log("Skipped users exported to: $skippedExportPath")
+}
+else {
+    Write-Log('Skipped users export not created because there are no skipped candidates.')
 }
 
-$skippedExport | Export-Csv -Path $skippedExportPath -NoTypeInformation -Encoding UTF8
-Write-Log("Skipped users exported to: $skippedExportPath")
-
 if ($isPreviewMode) {
-    $memberPreviewExport = $memberCandidates | ForEach-Object {
-        New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType 'Member'
+    if ($memberCandidates.Count -gt 0) {
+        $memberPreviewExport = $memberCandidates | ForEach-Object {
+            New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType 'Member'
+        }
+
+        $memberPreviewExport | Export-Csv -Path $memberPreviewExportPath -NoTypeInformation -Encoding UTF8
+        Write-Log("Preview member candidates exported to: $memberPreviewExportPath")
     }
-    $guestPreviewExport = $guestCandidates | ForEach-Object {
-        New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType 'Guest'
+    else {
+        Write-Log('Preview member export not created because there are no member candidates.')
     }
 
-    $memberPreviewExport | Export-Csv -Path $memberPreviewExportPath -NoTypeInformation -Encoding UTF8
-    $guestPreviewExport | Export-Csv -Path $guestPreviewExportPath -NoTypeInformation -Encoding UTF8
+    if ($guestCandidates.Count -gt 0) {
+        $guestPreviewExport = $guestCandidates | ForEach-Object {
+            New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType 'Guest'
+        }
 
-    Write-Log("Preview member candidates exported to: $memberPreviewExportPath")
-    Write-Log("Preview guest candidates exported to: $guestPreviewExportPath")
+        $guestPreviewExport | Export-Csv -Path $guestPreviewExportPath -NoTypeInformation -Encoding UTF8
+        Write-Log("Preview guest candidates exported to: $guestPreviewExportPath")
+    }
+    else {
+        Write-Log('Preview guest export not created because there are no guest candidates.')
+    }
 }
 
 Write-Host "Updating users where UserType is missing..." -ForegroundColor Cyan
@@ -301,11 +317,15 @@ foreach ($candidate in $updateCandidates) {
                     -Status "Processing $counter of $total ($percent%)" `
                     -PercentComplete $percent
 
-    $shouldLogThisItem = ($counter -eq 1) -or ($counter -eq $total) -or ($counter % 250 -eq 0)
+    $shouldLogThisItem = ($counter -eq 1) -or ($counter -eq $total) -or ($counter % 50 -eq 0)
+    $updateProgressLogMessage = "Updating user ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason)"
 
-    # Log at meaningful checkpoints to keep progress bar readable in large runs.
+    # Persist every item to the log file for traceability.
+    Write-Log($updateProgressLogMessage) -NoConsole
+
+    # Emit terminal updates at meaningful checkpoints to keep the progress bar readable.
     if ($shouldLogThisItem) {
-        Write-Log("Updating user ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason)")
+        Write-Log($updateProgressLogMessage) -NoFile
     }
 
     if ($DryRun) {
