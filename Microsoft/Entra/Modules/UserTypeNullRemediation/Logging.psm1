@@ -29,11 +29,10 @@ function Write-Log {
     # Write to file
     $logDirectory = Split-Path -Path $script:LogFile -Parent
     if (-not (Test-Path -Path $logDirectory)) {
-        New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+        New-Item -ItemType Directory -Path $logDirectory -Force -WhatIf:$false -Confirm:$false | Out-Null
     }
 
-    if ($WhatIfPreference) { return }
-    Add-Content -Path $script:LogFile -Value $entry
+    Add-Content -Path $script:LogFile -Value $entry -WhatIf:$false -Confirm:$false
 }
 
 Export-ModuleMember -Function Write-Log, Set-LogFilePath

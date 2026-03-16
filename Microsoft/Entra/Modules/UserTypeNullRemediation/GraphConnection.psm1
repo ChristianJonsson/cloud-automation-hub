@@ -1,22 +1,5 @@
-function Write-GraphBootstrapLog {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Message,
-
-        [ValidateSet('Info', 'Warning')]
-        [string]$Level = 'Info'
-    )
-
-    if ($Level -eq 'Warning') {
-        Write-Host $Message -ForegroundColor Yellow
-    }
-    else {
-        Write-Host $Message
-    }
-
-    if (Get-Command -Name Write-Log -ErrorAction SilentlyContinue) {
-        Write-Log($Message)
-    }
+if (-not (Get-Command -Name Write-Log -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot 'Logging.psm1') -ErrorAction Stop
 }
 
 function Connect-MgGraphWithRequirements {
@@ -30,29 +13,29 @@ function Connect-MgGraphWithRequirements {
     try {
         foreach ($moduleName in $GraphModuleNames) {
             if (-not (Get-Module -ListAvailable -Name $moduleName)) {
-                Write-GraphBootstrapLog -Message "Microsoft Graph module '$moduleName' not found. Installing for current user..." -Level Warning
+                Write-Log("Microsoft Graph module '$moduleName' not found. Installing for current user...")
                 Install-Module -Name $moduleName -Scope CurrentUser -Repository PSGallery -Force -ErrorAction Stop
-                Write-GraphBootstrapLog -Message "Module '$moduleName' installed successfully."
+                Write-Log("Module '$moduleName' installed successfully.")
             }
             else {
-                Write-GraphBootstrapLog -Message "Module '$moduleName' is already installed."
+                Write-Log("Module '$moduleName' is already installed.")
             }
 
             if (-not (Get-Module -Name $moduleName)) {
                 Import-Module $moduleName -ErrorAction Stop
-                Write-GraphBootstrapLog -Message "Module '$moduleName' imported."
+                Write-Log("Module '$moduleName' imported.")
             }
             else {
-                Write-GraphBootstrapLog -Message "Module '$moduleName' is already imported."
+                Write-Log("Module '$moduleName' is already imported.")
             }
         }
 
         $mgContext = Get-MgContext
 
         if (-not $mgContext) {
-            Write-GraphBootstrapLog -Message 'No active Microsoft Graph session found. Connecting...' -Level Warning
+            Write-Log('No active Microsoft Graph session found. Connecting...')
             Connect-MgGraph -Scopes $RequiredScopes -NoWelcome -ErrorAction Stop
-            Write-GraphBootstrapLog -Message 'Connected to Microsoft Graph.'
+            Write-Log('Connected to Microsoft Graph.')
             return
         }
 
@@ -60,18 +43,18 @@ function Connect-MgGraphWithRequirements {
         $missingScopes = $RequiredScopes | Where-Object { $_ -notin $currentScopes }
 
         if ($missingScopes.Count -gt 0) {
-            Write-GraphBootstrapLog -Message "Connected to Graph, but missing required scopes: $($missingScopes -join ', '). Reconnecting..." -Level Warning
+            Write-Log("Connected to Graph, but missing required scopes: $($missingScopes -join ', '). Reconnecting...")
             Disconnect-MgGraph | Out-Null
             Connect-MgGraph -Scopes $RequiredScopes -NoWelcome -ErrorAction Stop
-            Write-GraphBootstrapLog -Message 'Reconnected to Microsoft Graph with required scopes.'
+            Write-Log('Reconnected to Microsoft Graph with required scopes.')
         }
         else {
-            Write-GraphBootstrapLog -Message 'Existing Microsoft Graph context is valid and has required scopes.'
+            Write-Log('Existing Microsoft Graph context is valid and has required scopes.')
         }
     }
     catch {
         $errorMessage = "Microsoft Graph bootstrap failed: $($_.Exception.Message)"
-        Write-GraphBootstrapLog -Message $errorMessage -Level Warning
+        Write-Log($errorMessage)
         throw $errorMessage
     }
 }

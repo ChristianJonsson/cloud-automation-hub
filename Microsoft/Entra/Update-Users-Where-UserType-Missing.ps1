@@ -3,12 +3,13 @@
 Updates missing Entra ID userType values for confidently classified users, e.g. Members or Guests.
 
 .DESCRIPTION
-Retrieves users from Microsoft Graph, identifies accounts where userType is null,
+Retrieves users from Microsoft Graph (or reuses cached Graph query results), identifies accounts where userType is null,
 classifies users with high confidence as Member or Guest, exports review/audit files,
 and updates userType based on selected target mode.
 
 .NOTES
 Requires Microsoft Graph PowerShell authentication with permission to read and update users.
+Use -UseCachedGraphResults to reuse cached `$users` and `$verifiedDomains` variables from the current PowerShell session.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -16,6 +17,7 @@ param(
     [switch]$DryRun,
     [ValidateSet('Member', 'Guest', 'Both')]
     [string]$TargetType = 'Member',
+    [switch]$UseCachedGraphResults,
     [switch]$EnableGuestUpdates,
     [Alias('h')]
     [switch]$Help
@@ -24,12 +26,17 @@ param(
 if ($Help) {
     @"
 Usage:
-    .\Update-Users-Where-UserType-Missing.ps1 [-TargetType Member|Guest|Both] [-EnableGuestUpdates] [-DryRun] [-WhatIf] [-Confirm] [-Help|-h]
+    .\Update-Users-Where-UserType-Missing.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-DryRun] [-WhatIf] [-Confirm] [-Help|-h]
 
 Options:
     -TargetType
         Selects which inferred user types to process when UserType is null.
         Values: Member (default), Guest, Both.
+
+    -UseCachedGraphResults
+        Reuses cached Graph query variables from the current PowerShell session when valid.
+        Cached variables checked: `$users and `$verifiedDomains.
+        Falls back to live Graph queries when cached values are missing or invalid.
 
     -EnableGuestUpdates
         Safety gate for real guest writes. Required for non-preview Guest/Both runs.
@@ -52,6 +59,9 @@ Notes:
     - Preview exports (DryRun/WhatIf) are written to:
         .\Review_Would_Update_Members\WouldUpdateMembers-<timestamp>.csv
         .\Review_Would_Update_Guests\WouldUpdateGuests-<timestamp>.csv
+        - Log entries are written to .\Logs\UserUpdate.log for preview and non-preview runs.
+    - Cached Graph data reuse is in-memory only and applies to the current PowerShell session.
+      If cached values are not present or do not match expected structure, live Graph queries are used.
     - Guest writes can have broader policy impact. Use -DryRun or -WhatIf first.
 "@ | Write-Host
     return
@@ -62,6 +72,8 @@ $Global:LogFilePath = ".\UserUpdate.log"
 $moduleRoot = Join-Path $PSScriptRoot 'Modules\UserTypeNullRemediation'
 Import-Module (Join-Path $moduleRoot 'Logging.psm1')
 Import-Module (Join-Path $moduleRoot 'GraphConnection.psm1')
+Import-Module (Join-Path $moduleRoot 'GraphData.psm1')
+Import-Module (Join-Path $moduleRoot 'Classification.psm1')
 Set-LogFilePath -Path (Join-Path $PSScriptRoot 'Logs\UserUpdate.log')
 
 # Console banner
@@ -118,218 +130,6 @@ catch {
     Write-Error $graphSetupError -ErrorAction Stop
 }
 
-function Get-IdentitiesSummary {
-    param([object[]]$Identities)
-
-    if (-not $Identities -or $Identities.Count -eq 0) {
-        return ''
-    }
-
-    $parts = foreach ($identity in $Identities) {
-        $signInType = "$($identity.SignInType)"
-        $issuer = "$($identity.Issuer)"
-        $issuerAssignedId = "$($identity.IssuerAssignedId)"
-        "$signInType|$issuer|$issuerAssignedId"
-    }
-
-    return ($parts -join '; ')
-}
-
-function New-PolicyImpactRecord {
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$User,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Reason,
-
-        [string]$ProposedUserType = ''
-    )
-
-    [pscustomobject]@{
-        TimestampUtc = (Get-Date).ToUniversalTime().ToString('o')
-        UserPrincipalName = $User.UserPrincipalName
-        DisplayName = $User.DisplayName
-        Id = $User.Id
-        CurrentUserType = $User.UserType
-        ProposedUserType = $ProposedUserType
-        Reason = $Reason
-        CreationType = $User.CreationType
-        ExternalUserState = $User.ExternalUserState
-        AccountEnabled = $User.AccountEnabled
-        OnPremisesSyncEnabled = $User.OnPremisesSyncEnabled
-        OnPremisesImmutableId = $User.OnPremisesImmutableId
-        OnPremisesSecurityIdentifier = $User.OnPremisesSecurityIdentifier
-        AssignedLicensesCount = @($User.AssignedLicenses).Count
-        IdentitiesSummary = Get-IdentitiesSummary -Identities $User.Identities
-        PolicyImpactNotes = 'Review Conditional Access, dynamic group rules, app/group assignments, and entitlement policies before write.'
-    }
-}
-
-function Get-TenantVerifiedDomains {
-    if (-not (Get-Command -Name Get-MgOrganization -ErrorAction SilentlyContinue)) {
-        Write-Log("Get-MgOrganization is unavailable. Domain-based confidence checks will be skipped.")
-        return @()
-    }
-
-    try {
-        $organization = Get-MgOrganization -Property VerifiedDomains -ErrorAction Stop | Select-Object -First 1
-        $domains = @($organization.VerifiedDomains.Name | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        Write-Log("Loaded $($domains.Count) verified tenant domains for confidence checks.")
-        return $domains
-    }
-    catch {
-        Write-Log("Could not read verified tenant domains: $($_.Exception.Message). Domain-based checks will be skipped.")
-        return @()
-    }
-}
-
-function Test-ConfidentMemberCandidate {
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$User,
-
-        [string[]]$TenantDomains = @()
-    )
-
-    $signals = @()
-
-    if (-not [string]::IsNullOrWhiteSpace($User.UserType)) {
-        return [pscustomobject]@{
-            IsConfidentMember = $false
-            Reason = "UserType already set to '$($User.UserType)'"
-        }
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($User.UserPrincipalName) -and $User.UserPrincipalName -match '#EXT#') {
-        return [pscustomobject]@{
-            IsConfidentMember = $false
-            Reason = 'Guest indicator: UPN contains #EXT#'
-        }
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($User.ExternalUserState)) {
-        return [pscustomobject]@{
-            IsConfidentMember = $false
-            Reason = "Guest indicator: ExternalUserState = '$($User.ExternalUserState)'"
-        }
-    }
-
-    if ($User.CreationType -eq 'Invitation') {
-        return [pscustomobject]@{
-            IsConfidentMember = $false
-            Reason = "Guest indicator: CreationType = '$($User.CreationType)'"
-        }
-    }
-
-    if ($User.OnPremisesSyncEnabled -eq $true) {
-        $signals += 'OnPremisesSyncEnabled=true'
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesImmutableId)) {
-        $signals += 'OnPremisesImmutableId present'
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesSecurityIdentifier)) {
-        $signals += 'OnPremisesSecurityIdentifier present'
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesDistinguishedName)) {
-        $signals += 'OnPremisesDistinguishedName present'
-    }
-
-    if ($signals.Count -gt 0) {
-        return [pscustomobject]@{
-            IsConfidentMember = $true
-            Reason = "Confident member (synced): $($signals -join '; ')"
-        }
-    }
-
-    $upn = "$($User.UserPrincipalName)"
-    if ($upn -match '@') {
-        $domain = ($upn.Split('@')[-1]).ToLowerInvariant()
-        $knownDomains = @($TenantDomains | ForEach-Object { $_.ToLowerInvariant() })
-        if ($knownDomains -contains $domain) {
-            return [pscustomobject]@{
-                IsConfidentMember = $true
-                Reason = "Confident member (cloud-only): UPN domain '$domain' is a verified tenant domain"
-            }
-        }
-    }
-
-    return [pscustomobject]@{
-        IsConfidentMember = $false
-        Reason = 'Insufficient evidence to classify as Member with confidence'
-    }
-}
-
-function Test-ConfidentGuestCandidate {
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$User,
-
-        [string[]]$TenantDomains = @()
-    )
-
-    if (-not [string]::IsNullOrWhiteSpace($User.UserType)) {
-        return [pscustomobject]@{
-            IsConfidentGuest = $false
-            Reason = "UserType already set to '$($User.UserType)'"
-        }
-    }
-
-    $internalSignals = @()
-    if ($User.OnPremisesSyncEnabled -eq $true) { $internalSignals += 'OnPremisesSyncEnabled=true' }
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesImmutableId)) { $internalSignals += 'OnPremisesImmutableId present' }
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesSecurityIdentifier)) { $internalSignals += 'OnPremisesSecurityIdentifier present' }
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesDistinguishedName)) { $internalSignals += 'OnPremisesDistinguishedName present' }
-
-    if ($internalSignals.Count -gt 0) {
-        return [pscustomobject]@{
-            IsConfidentGuest = $false
-            Reason = "Internal/synced indicator(s): $($internalSignals -join '; ')"
-        }
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($User.UserPrincipalName) -and $User.UserPrincipalName -match '#EXT#') {
-        return [pscustomobject]@{
-            IsConfidentGuest = $true
-            Reason = 'Confident guest: UPN contains #EXT#'
-        }
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($User.ExternalUserState)) {
-        return [pscustomobject]@{
-            IsConfidentGuest = $true
-            Reason = "Confident guest: ExternalUserState = '$($User.ExternalUserState)'"
-        }
-    }
-
-    if ($User.CreationType -eq 'Invitation') {
-        return [pscustomobject]@{
-            IsConfidentGuest = $true
-            Reason = "Confident guest: CreationType = '$($User.CreationType)'"
-        }
-    }
-
-    $upn = "$($User.UserPrincipalName)"
-    if ($upn -match '@') {
-        $domain = ($upn.Split('@')[-1]).ToLowerInvariant()
-        $knownDomains = @($TenantDomains | ForEach-Object { $_.ToLowerInvariant() })
-        if ($knownDomains -contains $domain) {
-            return [pscustomobject]@{
-                IsConfidentGuest = $false
-                Reason = "UPN domain '$domain' is a verified tenant domain and no strong guest indicator is present"
-            }
-        }
-    }
-
-    return [pscustomobject]@{
-        IsConfidentGuest = $false
-        Reason = 'Insufficient evidence to classify as Guest with confidence'
-    }
-}
-
 
 # User properties required for filtering, logging, and future update logic.
 $properties = @(
@@ -343,19 +143,30 @@ $properties = @(
     'onPremisesUserPrincipalName',
     'onPremisesExtensionAttributes'
 )
+
+$requiredCachedUserProperties = @(
+    'Id','UserType','DisplayName','UserPrincipalName',
+    'CreationType','ExternalUserState','AccountEnabled','AssignedLicenses','Identities',
+    'OnPremisesSyncEnabled','OnPremisesDistinguishedName',
+    'OnPremisesSecurityIdentifier','OnPremisesImmutableId'
+)
+
 # Show selected properties for traceability.
 Write-Host "User Properties selected:"
 foreach ($prop in $properties){ Write-Host "  - $prop" }
-# Query all users using eventual consistency for large-tenant pagination scenarios.
-Write-Host "Retrieving users from Microsoft Graph... This will take several minutes..." -ForegroundColor Cyan
-$users = Get-MgUser -All -ConsistencyLevel eventual -Property $properties
-Write-Log("Found $($users.Count) users...")
+
+$usersResult = Get-UsersFromGraphOrCache -UseCachedGraphResults:$UseCachedGraphResults -Properties $properties -RequiredCachedUserProperties $requiredCachedUserProperties
+$users = @($usersResult.Users)
+$Global:users = $users
 
 # Force array output so Count is reliable for 0/1/many results.
 $usersWithNoUserType = @($users | Where-Object { $_.UserType -eq $null })
 Write-Log("Users missing 'UserType' property: $($usersWithNoUserType.Count)...")
 
-$verifiedDomains = Get-TenantVerifiedDomains
+$domainsResult = Get-VerifiedDomainsFromGraphOrCache -UseCachedGraphResults:$UseCachedGraphResults
+$verifiedDomains = @($domainsResult.Domains)
+$Global:verifiedDomains = $verifiedDomains
+
 if ($verifiedDomains.Count -gt 0) {
     Write-Log("Domain check enabled: users with missing UserType and UPN suffix in verified domains can be treated as confident cloud-only members.")
 }
