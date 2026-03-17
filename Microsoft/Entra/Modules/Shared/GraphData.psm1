@@ -50,6 +50,39 @@ function Get-NormalizedNonEmptyStringArray {
     )
 }
 
+function Test-CachedUsersSelectedProperties {
+    param(
+        [string[]]$RequiredGraphProperties = @()
+    )
+
+    if ($RequiredGraphProperties.Count -eq 0) {
+        return New-CacheValidationResult -IsReusable $true -Reason 'No required Graph property metadata provided for cache validation'
+    }
+
+    $cachedSelectionVariable = Get-Variable -Name usersSelectedProperties -Scope Global -ErrorAction SilentlyContinue
+    if ($null -eq $cachedSelectionVariable) {
+        return New-CacheValidationResult -IsReusable $false -Reason 'Cached users selected-properties metadata variable was not found'
+    }
+
+    $cachedSelection = @($cachedSelectionVariable.Value | ForEach-Object { "$_".ToLowerInvariant() })
+    if ($cachedSelection.Count -eq 0) {
+        return New-CacheValidationResult -IsReusable $false -Reason 'Cached users selected-properties metadata is empty'
+    }
+
+    $missingSelection = @(
+        $RequiredGraphProperties |
+            ForEach-Object { "$_".ToLowerInvariant() } |
+            Where-Object { $_ -notin $cachedSelection }
+    )
+
+    if ($missingSelection.Count -gt 0) {
+        return New-CacheValidationResult -IsReusable $false `
+                                         -Reason "Cached users selected-properties metadata is missing required Graph fields: $($missingSelection -join ', ')"
+    }
+
+    return New-CacheValidationResult -IsReusable $true -Reason 'Cached users selected-properties metadata is valid'
+}
+
 function Get-TenantVerifiedDomains {
     if (-not (Get-Command -Name Get-MgOrganization -ErrorAction SilentlyContinue)) {
         Write-Log('Get-MgOrganization is unavailable. Domain-based confidence checks will be skipped.')
@@ -155,11 +188,16 @@ function Get-UsersFromGraphOrCache {
     $usedCachedUsers = $false
 
     if ($UseCachedGraphResults) {
+        $cachedSelectionValidation = Test-CachedUsersSelectedProperties -RequiredGraphProperties $Properties
+        if (-not $cachedSelectionValidation.IsReusable) {
+            Write-Log("Cached users variable could not be reused. Reason: $($cachedSelectionValidation.Reason)")
+        }
+
         $cachedUsersVariable = Get-Variable -Name users -Scope Global -ErrorAction SilentlyContinue
-        if ($null -eq $cachedUsersVariable) {
+        if ($cachedSelectionValidation.IsReusable -and $null -eq $cachedUsersVariable) {
             Write-Log('Cached users variable not found in global session scope. Live Graph query will be used.')
         }
-        else {
+        elseif ($cachedSelectionValidation.IsReusable) {
             $cachedUsersValidation = Test-CachedUsersData -CandidateUsers $cachedUsersVariable.Value -RequiredProperties $RequiredCachedUserProperties
             if ($cachedUsersValidation.IsReusable) {
                 $users = @($cachedUsersValidation.Users)
@@ -175,6 +213,7 @@ function Get-UsersFromGraphOrCache {
     if (-not $usedCachedUsers) {
         Write-Log('Retrieving users from Microsoft Graph... This will take several minutes...')
         $users = @(Get-MgUser -All -ConsistencyLevel eventual -Property $Properties)
+        $Global:usersSelectedProperties = @($Properties)
         Write-Log("Found $($users.Count) users from Graph query.")
     }
     else {
