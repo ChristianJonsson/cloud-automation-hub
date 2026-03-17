@@ -318,14 +318,10 @@ foreach ($candidate in $updateCandidates) {
                     -PercentComplete $percent
 
     $shouldLogThisItem = ($counter -eq 1) -or ($counter -eq $total) -or ($counter % 50 -eq 0)
-    $updateProgressLogMessage = "Updating user ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason)"
 
-    # Persist every item to the log file for traceability.
-    Write-Log($updateProgressLogMessage) -NoConsole
-
-    # Emit terminal updates at meaningful checkpoints to keep the progress bar readable.
+    # Log at meaningful checkpoints to keep progress bar readable in large runs.
     if ($shouldLogThisItem) {
-        Write-Log($updateProgressLogMessage) -NoFile
+        Write-Log("Updating user ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason)")
     }
 
     if ($DryRun) {

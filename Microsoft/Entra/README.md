@@ -69,6 +69,14 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 - Log file:
   - `Logs/UserUpdate.log`
   - Written for both preview (`-DryRun` / `-WhatIf`) and non-preview runs.
+  - During update processing, per-user progress entries are written for every user.
+
+- Terminal progress logging during updates:
+  - To keep `Write-Progress` readable, per-user "Updating user x of X" messages are shown only at checkpoints:
+    - first user
+    - every 50 users
+    - last user
+  - Full per-user detail is still retained in the log file.
 
 ## Usage Examples
 
