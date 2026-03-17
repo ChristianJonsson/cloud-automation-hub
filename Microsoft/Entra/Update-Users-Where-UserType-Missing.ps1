@@ -69,12 +69,71 @@ Notes:
 
 # Logging module configuration
 $Global:LogFilePath = ".\UserUpdate.log"
-$moduleRoot = Join-Path $PSScriptRoot 'Modules\UserTypeNullRemediation'
-Import-Module (Join-Path $moduleRoot 'Logging.psm1')
-Import-Module (Join-Path $moduleRoot 'GraphConnection.psm1')
-Import-Module (Join-Path $moduleRoot 'GraphData.psm1')
-Import-Module (Join-Path $moduleRoot 'Classification.psm1')
+$commonSharedModuleRoot = Join-Path (Split-Path $PSScriptRoot -Parent) 'Common\Modules\Shared'
+$entraSharedModuleRoot = Join-Path $PSScriptRoot 'Modules\Shared'
+$featureModuleRoot = Join-Path $PSScriptRoot 'Modules\UserTypeNullRemediation'
+Import-Module (Join-Path $commonSharedModuleRoot 'Logging.psm1') -Force
+Import-Module (Join-Path $entraSharedModuleRoot 'GraphConnection.psm1') -Force
+Import-Module (Join-Path $entraSharedModuleRoot 'GraphData.psm1') -Force
+Import-Module (Join-Path $featureModuleRoot 'Classification.psm1') -Force
 Set-LogFilePath -Path (Join-Path $PSScriptRoot 'Logs\UserUpdate.log')
+
+function Ensure-DirectoryIfNeeded {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [bool]$Condition = $true
+    )
+
+    if ($Condition -and -not (Test-Path -Path $Path)) {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    }
+}
+
+function Export-PolicyImpactCsvIfAny {
+    param(
+        [object[]]$Candidates = @(),
+
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [string]$ProposedUserType = '',
+
+        [Parameter(Mandatory = $true)]
+        [string]$SuccessPrefix,
+
+        [Parameter(Mandatory = $true)]
+        [string]$EmptyMessage
+    )
+
+    $candidateArray = @($Candidates)
+    if ($candidateArray.Count -eq 0) {
+        Write-Log($EmptyMessage)
+        return
+    }
+
+    $exportRows = $candidateArray | ForEach-Object {
+        New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType $ProposedUserType
+    }
+
+    $exportRows | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8
+    Write-Log("${SuccessPrefix}: $Path")
+}
+
+function Test-IsCheckpointIteration {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Counter,
+
+        [Parameter(Mandatory = $true)]
+        [int]$Total,
+
+        [int]$Interval = 50
+    )
+
+    return ($Counter -eq 1) -or ($Counter -eq $Total) -or ($Counter % $Interval -eq 0)
+}
 
 # Console banner
 Write-Host "=====================================" -ForegroundColor Cyan
@@ -93,17 +152,9 @@ $skippedExportPath = Join-Path $skippedReviewFolder "SkippedUsers-$runTimestamp.
 $memberPreviewExportPath = Join-Path $memberPreviewFolder "WouldUpdateMembers-$runTimestamp.csv"
 $guestPreviewExportPath = Join-Path $guestPreviewFolder "WouldUpdateGuests-$runTimestamp.csv"
 
-if (-not (Test-Path -Path $skippedReviewFolder)) {
-    New-Item -ItemType Directory -Path $skippedReviewFolder -Force | Out-Null
-}
-
-if ($isPreviewMode -and -not (Test-Path -Path $memberPreviewFolder)) {
-    New-Item -ItemType Directory -Path $memberPreviewFolder -Force | Out-Null
-}
-
-if ($isPreviewMode -and -not (Test-Path -Path $guestPreviewFolder)) {
-    New-Item -ItemType Directory -Path $guestPreviewFolder -Force | Out-Null
-}
+Ensure-DirectoryIfNeeded -Path $skippedReviewFolder
+Ensure-DirectoryIfNeeded -Path $memberPreviewFolder -Condition $isPreviewMode
+Ensure-DirectoryIfNeeded -Path $guestPreviewFolder -Condition $isPreviewMode
 
 if ($DryRun) {
     Write-Log("DryRun mode enabled. No update writes will be attempted.")
@@ -134,6 +185,7 @@ catch {
 # User properties required for filtering, logging, and future update logic.
 $properties = @(
     'id','userType','displayName','userPrincipalName','mail','createdDateTime',
+    'jobTitle','companyName','department','officeLocation',
     'creationType','accountEnabled','assignedLicenses','identities',
     'externalUserState',
     'ServiceProvisioningErrors','onPremisesSyncEnabled',
@@ -146,9 +198,11 @@ $properties = @(
 
 $requiredCachedUserProperties = @(
     'Id','UserType','DisplayName','UserPrincipalName',
+    'JobTitle','CompanyName','Department','OfficeLocation',
     'CreationType','ExternalUserState','AccountEnabled','AssignedLicenses','Identities',
     'OnPremisesSyncEnabled','OnPremisesDistinguishedName',
-    'OnPremisesSecurityIdentifier','OnPremisesImmutableId'
+    'OnPremisesSecurityIdentifier','OnPremisesImmutableId',
+    'OnPremisesExtensionAttributes'
 )
 
 # Show selected properties for traceability.
@@ -247,42 +301,24 @@ foreach ($skipped in $skippedCandidates) {
     Write-Log("Skipped $($skipped.User.UserPrincipalName): $($skipped.Reason)")
 }
 
-if ($skippedCandidates.Count -gt 0) {
-    $skippedExport = $skippedCandidates | ForEach-Object {
-        New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType ''
-    }
-
-    $skippedExport | Export-Csv -Path $skippedExportPath -NoTypeInformation -Encoding UTF8
-    Write-Log("Skipped users exported to: $skippedExportPath")
-}
-else {
-    Write-Log('Skipped users export not created because there are no skipped candidates.')
-}
+Export-PolicyImpactCsvIfAny -Candidates $skippedCandidates `
+                            -Path $skippedExportPath `
+                            -ProposedUserType '' `
+                            -SuccessPrefix 'Skipped users exported to' `
+                            -EmptyMessage 'Skipped users export not created because there are no skipped candidates.'
 
 if ($isPreviewMode) {
-    if ($memberCandidates.Count -gt 0) {
-        $memberPreviewExport = $memberCandidates | ForEach-Object {
-            New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType 'Member'
-        }
+    Export-PolicyImpactCsvIfAny -Candidates $memberCandidates `
+                                -Path $memberPreviewExportPath `
+                                -ProposedUserType 'Member' `
+                                -SuccessPrefix 'Preview member candidates exported to' `
+                                -EmptyMessage 'Preview member export not created because there are no member candidates.'
 
-        $memberPreviewExport | Export-Csv -Path $memberPreviewExportPath -NoTypeInformation -Encoding UTF8
-        Write-Log("Preview member candidates exported to: $memberPreviewExportPath")
-    }
-    else {
-        Write-Log('Preview member export not created because there are no member candidates.')
-    }
-
-    if ($guestCandidates.Count -gt 0) {
-        $guestPreviewExport = $guestCandidates | ForEach-Object {
-            New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType 'Guest'
-        }
-
-        $guestPreviewExport | Export-Csv -Path $guestPreviewExportPath -NoTypeInformation -Encoding UTF8
-        Write-Log("Preview guest candidates exported to: $guestPreviewExportPath")
-    }
-    else {
-        Write-Log('Preview guest export not created because there are no guest candidates.')
-    }
+    Export-PolicyImpactCsvIfAny -Candidates $guestCandidates `
+                                -Path $guestPreviewExportPath `
+                                -ProposedUserType 'Guest' `
+                                -SuccessPrefix 'Preview guest candidates exported to' `
+                                -EmptyMessage 'Preview guest export not created because there are no guest candidates.'
 }
 
 Write-Host "Updating users where UserType is missing..." -ForegroundColor Cyan
@@ -317,7 +353,7 @@ foreach ($candidate in $updateCandidates) {
                     -Status "Processing $counter of $total ($percent%)" `
                     -PercentComplete $percent
 
-    $shouldLogThisItem = ($counter -eq 1) -or ($counter -eq $total) -or ($counter % 50 -eq 0)
+    $shouldLogThisItem = Test-IsCheckpointIteration -Counter $counter -Total $total
 
     # Log at meaningful checkpoints to keep progress bar readable in large runs.
     if ($shouldLogThisItem) {

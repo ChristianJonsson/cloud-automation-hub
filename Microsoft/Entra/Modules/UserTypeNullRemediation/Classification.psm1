@@ -15,6 +15,24 @@ function Get-IdentitiesSummary {
     return ($parts -join '; ')
 }
 
+function Get-OnPremisesExtensionAttributeMap {
+    param([object]$OnPremisesExtensionAttributes)
+
+    $attributeMap = [ordered]@{}
+
+    foreach ($index in 1..15) {
+        $propertyName = "ExtensionAttribute$index"
+        $attributeMap[$propertyName] = if ($null -ne $OnPremisesExtensionAttributes) {
+            $OnPremisesExtensionAttributes.$propertyName
+        }
+        else {
+            $null
+        }
+    }
+
+    return $attributeMap
+}
+
 function New-PolicyImpactRecord {
     param(
         [Parameter(Mandatory = $true)]
@@ -26,10 +44,15 @@ function New-PolicyImpactRecord {
         [string]$ProposedUserType = ''
     )
 
-    [pscustomobject]@{
+    $record = [ordered]@{
         TimestampUtc = (Get-Date).ToUniversalTime().ToString('o')
+        CreatedDateTime = $User.CreatedDateTime
         UserPrincipalName = $User.UserPrincipalName
         DisplayName = $User.DisplayName
+        JobTitle = $User.JobTitle
+        CompanyName = $User.CompanyName
+        Department = $User.Department
+        OfficeLocation = $User.OfficeLocation
         Id = $User.Id
         CurrentUserType = $User.UserType
         ProposedUserType = $ProposedUserType
@@ -44,6 +67,72 @@ function New-PolicyImpactRecord {
         IdentitiesSummary = Get-IdentitiesSummary -Identities $User.Identities
         PolicyImpactNotes = 'Review Conditional Access, dynamic group rules, app/group assignments, and entitlement policies before write.'
     }
+    # Include all on-premises extension attributes in the record for potential troubleshooting value, even though they are not currently used in classification logic.
+    foreach ($entry in (Get-OnPremisesExtensionAttributeMap -OnPremisesExtensionAttributes $User.OnPremisesExtensionAttributes).GetEnumerator()) {
+        $record[$entry.Key] = $entry.Value
+    }
+
+    return [pscustomobject]$record
+}
+
+function Get-OnPremisesSyncSignals {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$User
+    )
+
+    $signals = @()
+
+    if ($User.OnPremisesSyncEnabled -eq $true) {
+        $signals += 'OnPremisesSyncEnabled=true'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesImmutableId)) {
+        $signals += 'OnPremisesImmutableId present'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesSecurityIdentifier)) {
+        $signals += 'OnPremisesSecurityIdentifier present'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesDistinguishedName)) {
+        $signals += 'OnPremisesDistinguishedName present'
+    }
+
+    return $signals
+}
+
+function Get-UpnDomain {
+    param([string]$UserPrincipalName)
+
+    $upn = "$UserPrincipalName"
+    if ($upn -notmatch '@') {
+        return ''
+    }
+
+    return ($upn.Split('@')[-1]).ToLowerInvariant()
+}
+
+function Test-VerifiedTenantDomainMatch {
+    param(
+        [string]$UserPrincipalName,
+        [string[]]$TenantDomains = @()
+    )
+
+    $domain = Get-UpnDomain -UserPrincipalName $UserPrincipalName
+    if ([string]::IsNullOrWhiteSpace($domain)) {
+        return [pscustomobject]@{
+            IsMatch = $false
+            Domain = ''
+        }
+    }
+
+    $knownDomains = @($TenantDomains | ForEach-Object { "$_".ToLowerInvariant() })
+
+    return [pscustomobject]@{
+        IsMatch = ($knownDomains -contains $domain)
+        Domain = $domain
+    }
 }
 
 function Test-ConfidentMemberCandidate {
@@ -53,8 +142,6 @@ function Test-ConfidentMemberCandidate {
 
         [string[]]$TenantDomains = @()
     )
-
-    $signals = @()
 
     if (-not [string]::IsNullOrWhiteSpace($User.UserType)) {
         return [pscustomobject]@{
@@ -84,21 +171,7 @@ function Test-ConfidentMemberCandidate {
         }
     }
 
-    if ($User.OnPremisesSyncEnabled -eq $true) {
-        $signals += 'OnPremisesSyncEnabled=true'
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesImmutableId)) {
-        $signals += 'OnPremisesImmutableId present'
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesSecurityIdentifier)) {
-        $signals += 'OnPremisesSecurityIdentifier present'
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesDistinguishedName)) {
-        $signals += 'OnPremisesDistinguishedName present'
-    }
+    $signals = @(Get-OnPremisesSyncSignals -User $User)
 
     if ($signals.Count -gt 0) {
         return [pscustomobject]@{
@@ -107,15 +180,11 @@ function Test-ConfidentMemberCandidate {
         }
     }
 
-    $upn = "$($User.UserPrincipalName)"
-    if ($upn -match '@') {
-        $domain = ($upn.Split('@')[-1]).ToLowerInvariant()
-        $knownDomains = @($TenantDomains | ForEach-Object { $_.ToLowerInvariant() })
-        if ($knownDomains -contains $domain) {
-            return [pscustomobject]@{
-                IsConfidentMember = $true
-                Reason = "Confident member (cloud-only): UPN domain '$domain' is a verified tenant domain"
-            }
+    $domainMatch = Test-VerifiedTenantDomainMatch -UserPrincipalName $User.UserPrincipalName -TenantDomains $TenantDomains
+    if ($domainMatch.IsMatch) {
+        return [pscustomobject]@{
+            IsConfidentMember = $true
+            Reason = "Confident member (cloud-only): UPN domain '$($domainMatch.Domain)' is a verified tenant domain"
         }
     }
 
@@ -140,11 +209,7 @@ function Test-ConfidentGuestCandidate {
         }
     }
 
-    $internalSignals = @()
-    if ($User.OnPremisesSyncEnabled -eq $true) { $internalSignals += 'OnPremisesSyncEnabled=true' }
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesImmutableId)) { $internalSignals += 'OnPremisesImmutableId present' }
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesSecurityIdentifier)) { $internalSignals += 'OnPremisesSecurityIdentifier present' }
-    if (-not [string]::IsNullOrWhiteSpace($User.OnPremisesDistinguishedName)) { $internalSignals += 'OnPremisesDistinguishedName present' }
+    $internalSignals = @(Get-OnPremisesSyncSignals -User $User)
 
     if ($internalSignals.Count -gt 0) {
         return [pscustomobject]@{
@@ -174,15 +239,11 @@ function Test-ConfidentGuestCandidate {
         }
     }
 
-    $upn = "$($User.UserPrincipalName)"
-    if ($upn -match '@') {
-        $domain = ($upn.Split('@')[-1]).ToLowerInvariant()
-        $knownDomains = @($TenantDomains | ForEach-Object { $_.ToLowerInvariant() })
-        if ($knownDomains -contains $domain) {
-            return [pscustomobject]@{
-                IsConfidentGuest = $false
-                Reason = "UPN domain '$domain' is a verified tenant domain and no strong guest indicator is present"
-            }
+    $domainMatch = Test-VerifiedTenantDomainMatch -UserPrincipalName $User.UserPrincipalName -TenantDomains $TenantDomains
+    if ($domainMatch.IsMatch) {
+        return [pscustomobject]@{
+            IsConfidentGuest = $false
+            Reason = "UPN domain '$($domainMatch.Domain)' is a verified tenant domain and no strong guest indicator is present"
         }
     }
 

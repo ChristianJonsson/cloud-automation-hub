@@ -1,6 +1,24 @@
-if (-not (Get-Command -Name Write-Log -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $PSScriptRoot 'Logging.psm1') -ErrorAction Stop
+function Import-SharedLoggingModule {
+    if (Get-Command -Name Write-Log -ErrorAction SilentlyContinue) {
+        return
+    }
+
+    $candidatePaths = @(
+        (Join-Path $PSScriptRoot '..\..\..\Common\Modules\Shared\Logging.psm1'),
+        (Join-Path $PSScriptRoot '..\UserTypeNullRemediation\Logging.psm1')
+    )
+
+    foreach ($candidatePath in $candidatePaths) {
+        if (Test-Path -Path $candidatePath) {
+            Import-Module $candidatePath -ErrorAction Stop
+            return
+        }
+    }
+
+    throw 'Unable to import Logging.psm1 from shared or feature module paths.'
 }
+
+Import-SharedLoggingModule
 
 function New-CacheValidationResult {
     param(
@@ -34,7 +52,7 @@ function Get-NormalizedNonEmptyStringArray {
 
 function Get-TenantVerifiedDomains {
     if (-not (Get-Command -Name Get-MgOrganization -ErrorAction SilentlyContinue)) {
-        Write-Log("Get-MgOrganization is unavailable. Domain-based confidence checks will be skipped.")
+        Write-Log('Get-MgOrganization is unavailable. Domain-based confidence checks will be skipped.')
         return @()
     }
 
@@ -74,6 +92,25 @@ function Test-CachedUsersData {
     if ($missingProperties.Count -gt 0) {
         return New-CacheValidationResult -IsReusable $false `
                                          -Reason "Cached users variable is missing required properties: $($missingProperties -join ', ')"
+    }
+
+    if ($RequiredProperties -contains 'OnPremisesExtensionAttributes') {
+        $extensionAttributes = $firstUser.OnPremisesExtensionAttributes
+        if ($null -eq $extensionAttributes) {
+            return New-CacheValidationResult -IsReusable $false `
+                                             -Reason 'Cached users variable is missing OnPremisesExtensionAttributes values'
+        }
+
+        $missingExtensionAttributeProperties = @(
+            1..15 |
+                ForEach-Object { "ExtensionAttribute$_" } |
+                Where-Object { -not $extensionAttributes.PSObject.Properties[$_] }
+        )
+
+        if ($missingExtensionAttributeProperties.Count -gt 0) {
+            return New-CacheValidationResult -IsReusable $false `
+                                             -Reason "Cached users variable is missing extension attribute properties: $($missingExtensionAttributeProperties -join ', ')"
+        }
     }
 
     return New-CacheValidationResult -IsReusable $true `

@@ -20,13 +20,13 @@ The script supports preview execution (`-DryRun` and `-WhatIf`) and can reuse ca
 
 The script ensures Graph prerequisites using module logic in:
 
-- `Modules/UserTypeNullRemediation/GraphConnection.psm1`
+- `Modules/Shared/GraphConnection.psm1`
 
 The script is orchestrated from the main `.ps1` file and uses helper modules for focused responsibilities:
 
-- `Modules/UserTypeNullRemediation/GraphData.psm1`
+- `Modules/Shared/GraphData.psm1`
 - `Modules/UserTypeNullRemediation/Classification.psm1`
-- `Modules/UserTypeNullRemediation/Logging.psm1`
+- `../Common/Modules/Shared/Logging.psm1`
 
 ## Parameters
 
@@ -69,14 +69,12 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 - Log file:
   - `Logs/UserUpdate.log`
   - Written for both preview (`-DryRun` / `-WhatIf`) and non-preview runs.
-  - During update processing, per-user progress entries are written for every user.
 
 - Terminal progress logging during updates:
-  - To keep `Write-Progress` readable, per-user "Updating user x of X" messages are shown only at checkpoints:
+  - To keep `Write-Progress` readable, progress checkpoint messages are shown only at:
     - first user
     - every 50 users
     - last user
-  - Full per-user detail is still retained in the log file.
 
 ## Usage Examples
 
