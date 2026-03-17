@@ -60,11 +60,11 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 ## Outputs
 
 - Skipped users CSV (created only when there are skipped candidates):
-  - `Review_Skipped_Users/SkippedUsers-<timestamp>.csv`
+  - `Reports/UserTypeNullRemediation/Reports_Skipped_Users/SkippedUsersReport-<timestamp>.csv`
 
 - Preview candidate CSVs (only in `-DryRun` or `-WhatIf`, and only when that candidate set is non-empty):
-  - `Review_Would_Update_Members/WouldUpdateMembers-<timestamp>.csv`
-  - `Review_Would_Update_Guests/WouldUpdateGuests-<timestamp>.csv`
+  - `Reports/UserTypeNullRemediation/Reports_Would_Update_Members/WouldUpdateMembersReport-<timestamp>.csv`
+  - `Reports/UserTypeNullRemediation/Reports_Would_Update_Guests/WouldUpdateGuestsReport-<timestamp>.csv`
 
 - Log file:
   - `Logs/UserUpdate.log`

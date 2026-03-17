@@ -411,3 +411,6 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Scripts in this respository outputting Entra generated reports
+Microsoft/Entra/Reports/

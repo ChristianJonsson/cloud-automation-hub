@@ -55,10 +55,10 @@ Options:
 
 Notes:
     - Skipped users are exported only when one or more skipped candidates exist:
-        .\Review_Skipped_Users\SkippedUsers-<timestamp>.csv
+        .\Reports\UserTypeNullRemediation\Reports_Skipped_Users\SkippedUsersReport-<timestamp>.csv
     - Preview exports (DryRun/WhatIf) are written only when matching candidates exist:
-        .\Review_Would_Update_Members\WouldUpdateMembers-<timestamp>.csv
-        .\Review_Would_Update_Guests\WouldUpdateGuests-<timestamp>.csv
+        .\Reports\UserTypeNullRemediation\Reports_Would_Update_Members\WouldUpdateMembersReport-<timestamp>.csv
+        .\Reports\UserTypeNullRemediation\Reports_Would_Update_Guests\WouldUpdateGuestsReport-<timestamp>.csv
     - Log entries are written to .\Logs\UserUpdate.log for preview and non-preview runs.
     - Cached Graph data reuse is in-memory only and applies to the current PowerShell session.
       If cached values are not present or do not match expected structure, live Graph queries are used.
@@ -145,16 +145,17 @@ Write-Log("Starting UserType processing. TargetType=$TargetType")
 $isPreviewMode = $DryRun.IsPresent -or [bool]$WhatIfPreference
 
 $runTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$skippedReviewFolder = Join-Path $PSScriptRoot 'Review_Skipped_Users'
-$memberPreviewFolder = Join-Path $PSScriptRoot 'Review_Would_Update_Members'
-$guestPreviewFolder = Join-Path $PSScriptRoot 'Review_Would_Update_Guests'
-$skippedExportPath = Join-Path $skippedReviewFolder "SkippedUsers-$runTimestamp.csv"
-$memberPreviewExportPath = Join-Path $memberPreviewFolder "WouldUpdateMembers-$runTimestamp.csv"
-$guestPreviewExportPath = Join-Path $guestPreviewFolder "WouldUpdateGuests-$runTimestamp.csv"
+$reportsRootFolder = Join-Path $PSScriptRoot 'Reports\UserTypeNullRemediation'
+$skippedReportFolder = Join-Path $reportsRootFolder 'Reports_Skipped_Users'
+$memberPreviewReportFolder = Join-Path $reportsRootFolder 'Reports_Would_Update_Members'
+$guestPreviewReportFolder = Join-Path $reportsRootFolder 'Reports_Would_Update_Guests'
+$skippedExportPath = Join-Path $skippedReportFolder "SkippedUsersReport-$runTimestamp.csv"
+$memberPreviewExportPath = Join-Path $memberPreviewReportFolder "WouldUpdateMembersReport-$runTimestamp.csv"
+$guestPreviewExportPath = Join-Path $guestPreviewReportFolder "WouldUpdateGuestsReport-$runTimestamp.csv"
 
-Ensure-DirectoryIfNeeded -Path $skippedReviewFolder
-Ensure-DirectoryIfNeeded -Path $memberPreviewFolder -Condition $isPreviewMode
-Ensure-DirectoryIfNeeded -Path $guestPreviewFolder -Condition $isPreviewMode
+Ensure-DirectoryIfNeeded -Path $skippedReportFolder
+Ensure-DirectoryIfNeeded -Path $memberPreviewReportFolder -Condition $isPreviewMode
+Ensure-DirectoryIfNeeded -Path $guestPreviewReportFolder -Condition $isPreviewMode
 
 if ($DryRun) {
     Write-Log("DryRun mode enabled. No update writes will be attempted.")
