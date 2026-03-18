@@ -10,6 +10,7 @@ Generates report-only outputs for three analysis modes:
 
 .NOTES
 This script does not write changes to Entra user objects.
+Use -UseCachedGraphResults to reuse cached `$users` from the current PowerShell session.
 #>
 
 [CmdletBinding()]
@@ -56,6 +57,8 @@ Notes:
     - This script is report-only and does not update users.
     - IncludeGuests is off by default, so guest-like users are excluded unless explicitly included.
     - Health mode writes both detailed and aggregate summary CSV outputs.
+    - UseCachedGraphResults reuses in-session cached users when valid, and falls back to live Graph queries when cache is missing or invalid.
+    - Cache reuse is in-memory only for the current PowerShell session.
 "@ | Write-Host
     return
 }
@@ -243,12 +246,54 @@ function Show-ClassificationSummary {
     Write-Host "Total evaluated: $total"
 }
 
+function Show-SyncSourceSummary {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Records,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Title
+    )
+
+    $recordArray = @($Records)
+    $total = $recordArray.Count
+
+    Write-Host ''
+    Write-Host $Title -ForegroundColor Cyan
+
+    if ($total -eq 0) {
+        Write-Host 'No records to summarize.' -ForegroundColor Yellow
+        return
+    }
+
+    $summary = @(
+        $recordArray |
+            Group-Object -Property SyncSource,SyncSourceConfidence |
+            Sort-Object Name |
+            ForEach-Object {
+                [pscustomobject]@{
+                    SyncSource = $_.Group[0].SyncSource
+                    Confidence = $_.Group[0].SyncSourceConfidence
+                    Count = $_.Count
+                    Percent = [math]::Round(($_.Count / $total) * 100, 2)
+                }
+            }
+    )
+
+    $summary | Format-Table -AutoSize | Out-String | Write-Host
+    Write-Host "Total evaluated: $total"
+}
+
 Write-Host '=====================================' -ForegroundColor Cyan
 Write-Host '  Verifying Hybrid Sync Status' -ForegroundColor Cyan
 Write-Host '=====================================' -ForegroundColor Cyan
 Write-Host ''
 
 Write-Log("Starting hybrid sync verification. Mode=$Mode, SyncSource=$SyncSource, ThresholdDays=$OutOfSyncDaysThreshold")
+
+if ($UseCachedGraphResults) {
+    Write-Log('UseCachedGraphResults enabled. Script will reuse valid in-session cached users when available.')
+}
 
 New-DirectoryIfMissing -Path $OutputFolderPath
 
@@ -344,6 +389,7 @@ $recordsToExport | Export-Csv -Path $detailCsvPath -NoTypeInformation -Encoding 
 Write-Log("Detailed CSV exported: $detailCsvPath")
 
 Show-ClassificationSummary -Records $recordsToExport -Title "Mode summary: $Mode"
+Show-SyncSourceSummary -Records $records -Title 'Inferred sync connection summary'
 
 if ($Mode -eq 'Health') {
     $healthSummary = New-HealthSummaryRecord -RunTimestampUtc $runTimestampUtc -TenantId $tenantId -Evaluations $evaluations -OutOfSyncDaysThreshold $OutOfSyncDaysThreshold
