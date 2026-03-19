@@ -10,6 +10,8 @@ and updates userType based on selected target mode.
 .NOTES
 Requires Microsoft Graph PowerShell authentication with permission to read and update users.
 Use -UseCachedGraphResults to reuse cached `$users` and `$verifiedDomains` variables from the current PowerShell session.
+For policy-impact preflight checks, delegated read scopes are also required:
+Policy.Read.All, Directory.Read.All, EntitlementManagement.Read.All, and RoleManagement.Read.Directory.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -19,6 +21,8 @@ param(
     [string]$TargetType = 'Member',
     [switch]$UseCachedGraphResults,
     [switch]$EnableGuestUpdates,
+    [ValidateSet('Strict', 'Balanced', 'Permissive')]
+    [string]$StrictnessMode = 'Balanced',
     [Alias('h')]
     [switch]$Help
 )
@@ -26,7 +30,7 @@ param(
 if ($Help) {
     @"
 Usage:
-    .\Update-Users-Where-UserType-Missing.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-DryRun] [-WhatIf] [-Confirm] [-Help|-h]
+    .\Update-Users-Where-UserType-Missing.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-StrictnessMode Strict|Balanced|Permissive] [-DryRun] [-WhatIf] [-Confirm] [-Help|-h]
 
 Options:
     -TargetType
@@ -40,6 +44,13 @@ Options:
 
     -EnableGuestUpdates
         Safety gate for real guest writes. Required for non-preview Guest/Both runs.
+
+    -StrictnessMode
+        Controls how policy prerequisite findings are enforced in write mode.
+        Strict = advisory and critical failures block writes.
+        Balanced (default) = only critical failures block writes.
+        Permissive = allows write mode to continue when EntitlementManagement checks are unavailable.
+        Permissive still records partial coverage in logs/CSV metadata and blocks on other critical failures.
 
     -DryRun
         Preview mode. No updates are written.
@@ -55,14 +66,24 @@ Options:
 
 Notes:
     - Skipped users are exported only when one or more skipped candidates exist:
-        .\Review_Skipped_Users\SkippedUsers-<timestamp>.csv
+        .\Reports\UserTypeNullRemediation\Reports_Skipped_Users\SkippedUsers-<timestamp>.csv
     - Preview exports (DryRun/WhatIf) are written only when matching candidates exist:
-        .\Review_Would_Update_Members\WouldUpdateMembers-<timestamp>.csv
-        .\Review_Would_Update_Guests\WouldUpdateGuests-<timestamp>.csv
+        .\Reports\UserTypeNullRemediation\Reports_Would_Update_Members\WouldUpdateMembers-<timestamp>.csv
+        .\Reports\UserTypeNullRemediation\Reports_Would_Update_Guests\WouldUpdateGuests-<timestamp>.csv
+    - Preflight artifacts are written to:
+        .\Reports\UserTypeNullRemediation\Preflight-<timestamp>.json
     - Log entries are written to .\Logs\UserUpdate.log for preview and non-preview runs.
     - Cached Graph data reuse is in-memory only and applies to the current PowerShell session.
       If cached values are not present or do not match expected structure, live Graph queries are used.
     - Guest writes can have broader policy impact. Use -DryRun or -WhatIf first.
+    - Delegated read scopes for policy checks:
+        Policy.Read.All, Directory.Read.All, EntitlementManagement.Read.All,
+        RoleManagement.Read.Directory.
+    - Policy impact checks are executed for Conditional Access, dynamic groups, assignments,
+      entitlement management, and directory role assignments.
+      Non-preview runs stop before writes when critical policy checks are unavailable.
+        - Each run writes a compact preflight summary to log and a detailed preflight JSON artifact.
+        - Exported CSV rows include preflight metadata and computed policy-impact counters.
 "@ | Write-Host
     return
 }
@@ -76,6 +97,7 @@ Import-Module (Join-Path $commonSharedModuleRoot 'Logging.psm1') -Force
 Import-Module (Join-Path $entraSharedModuleRoot 'GraphConnection.psm1') -Force
 Import-Module (Join-Path $entraSharedModuleRoot 'GraphData.psm1') -Force
 Import-Module (Join-Path $featureModuleRoot 'Classification.psm1') -Force
+Import-Module (Join-Path $featureModuleRoot 'PolicyImpactValidation.psm1') -Force
 Set-LogFilePath -Path (Join-Path $PSScriptRoot 'Logs\UserUpdate.log')
 
 function Ensure-DirectoryIfNeeded {
@@ -104,7 +126,11 @@ function Export-PolicyImpactCsvIfAny {
         [string]$SuccessPrefix,
 
         [Parameter(Mandatory = $true)]
-        [string]$EmptyMessage
+        [string]$EmptyMessage,
+
+        [string]$PreflightRunId = '',
+
+        [string]$PreflightSummary = ''
     )
 
     $candidateArray = @($Candidates)
@@ -114,7 +140,7 @@ function Export-PolicyImpactCsvIfAny {
     }
 
     $exportRows = $candidateArray | ForEach-Object {
-        New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType $ProposedUserType
+        New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType $ProposedUserType -PolicyImpact $_.PolicyImpact -PreflightRunId $PreflightRunId -PreflightSummary $PreflightSummary
     }
 
     $exportRows | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8
@@ -141,16 +167,23 @@ Write-Host "  Updating Missing UserType Accounts" -ForegroundColor Cyan
 Write-Host "=====================================`n" -ForegroundColor Cyan
 
 Write-Log("Starting UserType processing. TargetType=$TargetType")
+Write-Log("StrictnessMode set to '$StrictnessMode'.")
 
 $isPreviewMode = $DryRun.IsPresent -or [bool]$WhatIfPreference
+$policyImpactScopeMatrix = @(Get-PolicyImpactScopeMatrix)
 
 $runTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$skippedReviewFolder = Join-Path $PSScriptRoot 'Review_Skipped_Users'
-$memberPreviewFolder = Join-Path $PSScriptRoot 'Review_Would_Update_Members'
-$guestPreviewFolder = Join-Path $PSScriptRoot 'Review_Would_Update_Guests'
+$preflightRunId = "UserTypePreflight-$runTimestamp"
+$reportsRootFolder = Join-Path $PSScriptRoot 'Reports\UserTypeNullRemediation'
+$skippedReviewFolder = Join-Path $reportsRootFolder 'Reports_Skipped_Users'
+$memberPreviewFolder = Join-Path $reportsRootFolder 'Reports_Would_Update_Members'
+$guestPreviewFolder = Join-Path $reportsRootFolder 'Reports_Would_Update_Guests'
 $skippedExportPath = Join-Path $skippedReviewFolder "SkippedUsers-$runTimestamp.csv"
 $memberPreviewExportPath = Join-Path $memberPreviewFolder "WouldUpdateMembers-$runTimestamp.csv"
 $guestPreviewExportPath = Join-Path $guestPreviewFolder "WouldUpdateGuests-$runTimestamp.csv"
+$preflightArtifactPath = Join-Path $reportsRootFolder "Preflight-$runTimestamp.json"
+
+Ensure-DirectoryIfNeeded -Path $reportsRootFolder
 
 Ensure-DirectoryIfNeeded -Path $skippedReviewFolder
 Ensure-DirectoryIfNeeded -Path $memberPreviewFolder -Condition $isPreviewMode
@@ -173,13 +206,65 @@ if (($TargetType -in @('Guest', 'Both')) -and -not $isPreviewMode -and -not $Ena
 
 # Ensure Microsoft Graph PowerShell is available, imported, and connected with needed scopes.
 try {
-    Connect-MgGraphWithRequirements -GraphModuleNames @('Microsoft.Graph.Users', 'Microsoft.Graph.Identity.DirectoryManagement') -RequiredScopes @('User.Read.All', 'User.ReadWrite.All', 'Organization.Read.All')
+    Connect-MgGraphWithRequirements -GraphModuleNames @(
+        'Microsoft.Graph.Users',
+        'Microsoft.Graph.Identity.DirectoryManagement',
+        'Microsoft.Graph.Groups',
+        'Microsoft.Graph.Identity.SignIns',
+        'Microsoft.Graph.Identity.Governance'
+    ) -RequiredScopes @('User.Read.All', 'User.ReadWrite.All', 'Organization.Read.All')
 }
 catch {
     $graphSetupError = "Stopping script because Graph prerequisites failed: $($_.Exception.Message)"
     Write-Log($graphSetupError)
     Write-Error $graphSetupError -ErrorAction Stop
 }
+
+foreach ($scopeEntry in $policyImpactScopeMatrix) {
+    $severity = if ($scopeEntry.IsCritical) { 'Critical' } else { 'Advisory' }
+    Write-Log("Policy check scope requirements [$severity] $($scopeEntry.Area): $($scopeEntry.RequiredScopes -join ', ')")
+}
+
+try {
+    $policyPrerequisiteResult = Test-PolicyImpactPrerequisites -IsPreviewMode:$isPreviewMode -StrictnessMode $StrictnessMode
+
+    foreach ($result in @($policyPrerequisiteResult.Results)) {
+        $severity = if ($result.IsCritical) { 'Critical' } else { 'Advisory' }
+        Write-Log("Policy prerequisite [$severity] $($result.Area): $($result.Status) - $($result.Message)")
+    }
+
+    $preflightSummary = $policyPrerequisiteResult.Summary
+    Write-Log("Policy preflight summary: $preflightSummary")
+
+    $preflightArtifact = [pscustomobject]@{
+        RunTimestamp = $runTimestamp
+        PreflightRunId = $preflightRunId
+        IsPreviewMode = $isPreviewMode
+        TargetType = $TargetType
+        StrictnessMode = $StrictnessMode
+        Summary = $preflightSummary
+        Result = $policyPrerequisiteResult
+    }
+    $preflightArtifact | ConvertTo-Json -Depth 8 | Set-Content -Path $preflightArtifactPath -Encoding UTF8
+    Write-Log("Policy preflight artifact exported to: $preflightArtifactPath")
+
+    if (-not $policyPrerequisiteResult.CanProceed) {
+        Write-Log($policyPrerequisiteResult.BlockingMessage)
+        Write-Error $policyPrerequisiteResult.BlockingMessage -ErrorAction Stop
+    }
+
+    if ($policyPrerequisiteResult.AdvisoryFindings.Count -gt 0) {
+        Write-Log("Policy advisory findings: $((@($policyPrerequisiteResult.AdvisoryFindings | ForEach-Object { $_.Area }) -join ', '))")
+    }
+}
+catch {
+    $policyPreflightError = "Stopping script because policy prerequisite validation failed: $($_.Exception.Message)"
+    Write-Log($policyPreflightError)
+    Write-Error $policyPreflightError -ErrorAction Stop
+}
+
+$policyImpactContext = Initialize-PolicyImpactContext -PrerequisiteResult $policyPrerequisiteResult
+Write-Log('Initialized policy impact context from preflight results.')
 
 
 # User properties required for filtering, logging, and future update logic.
@@ -285,6 +370,23 @@ $classifiedUsers = foreach ($user in $usersWithNoUserType) {
         Reason = $reason
         MemberReason = if ($null -ne $memberClassification) { $memberClassification.Reason } else { 'Not evaluated for this TargetType' }
         GuestReason = if ($null -ne $guestClassification) { $guestClassification.Reason } else { 'Not evaluated for this TargetType' }
+        PolicyImpact = if (-not [string]::IsNullOrWhiteSpace($proposedUserType)) {
+            Get-UserPolicyImpact -User $user -ProposedUserType $proposedUserType -PolicyContext $policyImpactContext
+        }
+        else {
+            [pscustomobject]@{
+                CoverageLevel = 'NotEvaluated'
+                RiskLevel = 'None'
+                ConditionalAccessCount = 0
+                DynamicGroupRuleCount = 0
+                GroupMembershipCount = 0
+                AppRoleAssignmentCount = 0
+                DirectoryRoleAssignmentCount = 0
+                EntitlementAssignmentCount = 0
+                BlockingFlags = ''
+                Summary = 'No proposed userType; policy impact not evaluated.'
+            }
+        }
     }
 }
 
@@ -305,20 +407,26 @@ Export-PolicyImpactCsvIfAny -Candidates $skippedCandidates `
                             -Path $skippedExportPath `
                             -ProposedUserType '' `
                             -SuccessPrefix 'Skipped users exported to' `
-                            -EmptyMessage 'Skipped users export not created because there are no skipped candidates.'
+                            -EmptyMessage 'Skipped users export not created because there are no skipped candidates.' `
+                            -PreflightRunId $preflightRunId `
+                            -PreflightSummary $preflightSummary
 
 if ($isPreviewMode) {
     Export-PolicyImpactCsvIfAny -Candidates $memberCandidates `
                                 -Path $memberPreviewExportPath `
                                 -ProposedUserType 'Member' `
                                 -SuccessPrefix 'Preview member candidates exported to' `
-                                -EmptyMessage 'Preview member export not created because there are no member candidates.'
+                                -EmptyMessage 'Preview member export not created because there are no member candidates.' `
+                                -PreflightRunId $preflightRunId `
+                                -PreflightSummary $preflightSummary
 
     Export-PolicyImpactCsvIfAny -Candidates $guestCandidates `
                                 -Path $guestPreviewExportPath `
                                 -ProposedUserType 'Guest' `
                                 -SuccessPrefix 'Preview guest candidates exported to' `
-                                -EmptyMessage 'Preview guest export not created because there are no guest candidates.'
+                                -EmptyMessage 'Preview guest export not created because there are no guest candidates.' `
+                                -PreflightRunId $preflightRunId `
+                                -PreflightSummary $preflightSummary
 }
 
 Write-Host "Updating users where UserType is missing..." -ForegroundColor Cyan
@@ -357,7 +465,7 @@ foreach ($candidate in $updateCandidates) {
 
     # Log at meaningful checkpoints to keep progress bar readable in large runs.
     if ($shouldLogThisItem) {
-        Write-Log("Updating user ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason)")
+        Write-Log("Updating user ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason) | PolicyRisk=$($candidate.PolicyImpact.RiskLevel) | PolicySummary=$($candidate.PolicyImpact.Summary)")
     }
 
     if ($DryRun) {

@@ -41,31 +41,70 @@ function New-PolicyImpactRecord {
         [Parameter(Mandatory = $true)]
         [string]$Reason,
 
-        [string]$ProposedUserType = ''
+        [string]$ProposedUserType = '',
+
+        [object]$PolicyImpact = $null,
+
+        [string]$PreflightRunId = '',
+
+        [string]$PreflightSummary = ''
     )
 
+    $impact = if ($null -ne $PolicyImpact) {
+        $PolicyImpact
+    }
+    else {
+        [pscustomobject]@{
+            CoverageLevel = 'NotEvaluated'
+            RiskLevel = 'Unknown'
+            ConditionalAccessCount = 0
+            DynamicGroupRuleCount = 0
+            GroupMembershipCount = 0
+            AppRoleAssignmentCount = 0
+            DirectoryRoleAssignmentCount = 0
+            EntitlementAssignmentCount = 0
+            BlockingFlags = ''
+            Summary = 'Policy impact was not evaluated for this record.'
+        }
+    }
+
     $record = [ordered]@{
+        # Band 1 — Run metadata
         TimestampUtc = (Get-Date).ToUniversalTime().ToString('o')
-        CreatedDateTime = $User.CreatedDateTime
+        PreflightRunId = $PreflightRunId
+        PreflightSummary = $PreflightSummary
+        # Band 2 — User identity & org attributes
         UserPrincipalName = $User.UserPrincipalName
         DisplayName = $User.DisplayName
+        Id = $User.Id
         JobTitle = $User.JobTitle
         CompanyName = $User.CompanyName
         Department = $User.Department
         OfficeLocation = $User.OfficeLocation
-        Id = $User.Id
-        CurrentUserType = $User.UserType
-        ProposedUserType = $ProposedUserType
-        Reason = $Reason
+        AccountEnabled = $User.AccountEnabled
+        CreatedDateTime = $User.CreatedDateTime
         CreationType = $User.CreationType
         ExternalUserState = $User.ExternalUserState
-        AccountEnabled = $User.AccountEnabled
         OnPremisesSyncEnabled = $User.OnPremisesSyncEnabled
         OnPremisesImmutableId = $User.OnPremisesImmutableId
         OnPremisesSecurityIdentifier = $User.OnPremisesSecurityIdentifier
         AssignedLicensesCount = @($User.AssignedLicenses).Count
         IdentitiesSummary = Get-IdentitiesSummary -Identities $User.Identities
-        PolicyImpactNotes = 'Review Conditional Access, dynamic group rules, app/group assignments, and entitlement policies before write.'
+        # Band 3 — Classification decision
+        CurrentUserType = $User.UserType
+        ProposedUserType = $ProposedUserType
+        Reason = $Reason
+        # Band 4 — Policy impact
+        PolicyCoverageLevel = $impact.CoverageLevel
+        PolicyRiskLevel = $impact.RiskLevel
+        ConditionalAccessCount = $impact.ConditionalAccessCount
+        DynamicGroupRuleCount = $impact.DynamicGroupRuleCount
+        GroupMembershipCount = $impact.GroupMembershipCount
+        AppRoleAssignmentCount = $impact.AppRoleAssignmentCount
+        DirectoryRoleAssignmentCount = $impact.DirectoryRoleAssignmentCount
+        EntitlementAssignmentCount = $impact.EntitlementAssignmentCount
+        BlockingFlags = $impact.BlockingFlags
+        PolicyImpactNotes = $impact.Summary
     }
     # Include all on-premises extension attributes in the record for potential troubleshooting value, even though they are not currently used in classification logic.
     foreach ($entry in (Get-OnPremisesExtensionAttributeMap -OnPremisesExtensionAttributes $User.OnPremisesExtensionAttributes).GetEnumerator()) {

@@ -411,3 +411,6 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Generated Entra remediation artifacts
+Microsoft/Entra/Reports/
