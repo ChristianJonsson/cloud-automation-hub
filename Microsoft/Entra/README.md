@@ -10,7 +10,7 @@ This folder contains Entra-focused automation scripts and supporting modules.
 
 `UserTypeNullRemediation.ps1` finds users with a null `userType`, classifies them with high confidence as `Member` or `Guest`, exports audit/review CSVs, and updates `userType` based on selected target mode.
 
-The script supports preview execution (`-DryRun` and `-WhatIf`), strictness-based preflight policy checks, and can reuse cached Graph query results from the current PowerShell session.
+The script supports preview execution (`-WhatIf`), strictness-based preflight policy checks, and can reuse cached Graph query results from the current PowerShell session.
 
 ## Requirements
 
@@ -37,8 +37,27 @@ Policy-impact preflight scopes (required for full policy coverage)
 
 Advisory policy-impact scopes (optional in v1; used for expanded heuristic visibility)
 
-- `Team.ReadBasic.All`
-- `Mail.ReadBasic.All`
+Note: TeamsExchangeHeuristics scopes (Team.ReadBasic.All, Mail.ReadBasic.All) are currently disabled.
+
+## Policy Impact Evaluation Areas
+
+The script evaluates these policy-impact areas when building preflight and per-user impact results.
+
+Critical areas (write mode can block when unavailable, depending on `-StrictnessMode`)
+
+- Conditional Access
+- DynamicGroups
+- GroupAndAppAssignments
+- EntitlementManagement
+- DirectoryRoleAssignments
+
+Advisory areas
+
+- LicensingHeuristics
+
+Disabled advisory area
+
+- TeamsExchangeHeuristics is currently disabled and its associated scopes are not requested.
 
 Scope behavior notes:
 
@@ -76,16 +95,15 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 
 - `-StrictnessMode Strict|Balanced|Permissive`
   - Controls how policy preflight findings are enforced in write mode.
-  - `Strict`: critical and advisory unavailable findings can block writes.
+  - `Strict`: critical failures block writes, and advisory findings with `Unavailable` status also block writes.
   - `Balanced` (default): only critical failures block writes.
   - `Permissive`: allows write mode to continue when only EntitlementManagement checks are unavailable.
   - `Permissive` still records partial policy coverage in log/CSV outputs and blocks on other critical failures.
 
-- `-DryRun`
-  - Preview mode. No update writes are attempted.
-
 - `-WhatIf`
-  - Standard PowerShell simulation through `ShouldProcess`.
+  - Preview mode. No update writes are attempted.
+  - Writes preview CSV exports and preflight artifacts for review.
+  - Suppresses per-item `ShouldProcess` WhatIf console output for large runs; use preview CSVs for detailed review.
 
 - `-Confirm`
   - Prompts before each update operation.
@@ -98,7 +116,7 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 - Skipped users CSV (created only when there are skipped candidates):
   - `Reports/UserTypeNullRemediation/Reports_Skipped_Users/SkippedUsers-<timestamp>.csv`
 
-- Preview candidate CSVs (only in `-DryRun` or `-WhatIf`, and only when that candidate set is non-empty):
+- Preview candidate CSVs (only in `-WhatIf`, and only when that candidate set is non-empty):
   - `Reports/UserTypeNullRemediation/Reports_Would_Update_Members/WouldUpdateMembers-<timestamp>.csv`
   - `Reports/UserTypeNullRemediation/Reports_Would_Update_Guests/WouldUpdateGuests-<timestamp>.csv`
 
@@ -108,7 +126,7 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 
 - Log file:
   - `Logs/UserUpdate.log`
-  - Written for both preview (`-DryRun` / `-WhatIf`) and non-preview runs.
+  - Written for both preview (`-WhatIf`) and non-preview runs.
 
 - Terminal progress logging during updates:
   - To keep `Write-Progress` readable, progress checkpoint messages are shown only at:
@@ -121,12 +139,21 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
   - Impact counters for Conditional Access, dynamic groups, memberships, app roles, directory roles, and entitlement assignments
   - `BlockingFlags` and computed `PolicyImpactNotes`
 
+- Exported CSV column groups:
+  - Run metadata: `TimestampUtc`, `PreflightRunId`, `PreflightSummary`
+  - User identity: `UserPrincipalName`, `DisplayName`, `Id`, `JobTitle`, `CompanyName`, `Department`, `OfficeLocation`
+  - Account state: `AccountEnabled`, `CreatedDateTime`, `CreationType`, `ExternalUserState`
+  - Sync and identity signals: `OnPremisesSyncEnabled`, `OnPremisesImmutableId`, `OnPremisesSecurityIdentifier`, `AssignedLicensesCount`, `IdentitiesSummary`
+  - Classification: `CurrentUserType`, `ProposedUserType`, `Reason`
+  - Policy impact: `PolicyCoverageLevel`, `PolicyRiskLevel`, `ConditionalAccessCount`, `DynamicGroupRuleCount`, `GroupMembershipCount`, `AppRoleAssignmentCount`, `DirectoryRoleAssignmentCount`, `EntitlementAssignmentCount`, `BlockingFlags`, `PolicyImpactNotes`
+  - Diagnostic extension attributes: `ExtensionAttribute1` through `ExtensionAttribute15`
+
 ## Usage Examples
 
 ### 1) Default preview (member target)
 
 ```powershell
-.\UserTypeNullRemediation.ps1 -DryRun
+.\UserTypeNullRemediation.ps1 -WhatIf
 ```
 
 ### 2) Preview both member and guest candidates
@@ -151,10 +178,10 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 
 ```powershell
 # First run builds in-session variables via live Graph queries
-. .\UserTypeNullRemediation.ps1 -DryRun
+. .\UserTypeNullRemediation.ps1 -WhatIf
 
 # Second run reuses cached $users and $verifiedDomains when valid
-. .\UserTypeNullRemediation.ps1 -UseCachedGraphResults -DryRun
+. .\UserTypeNullRemediation.ps1 -UseCachedGraphResults -WhatIf
 ```
 
 ## Cache Reuse Behavior
@@ -171,7 +198,7 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 
 ## Safety Notes
 
-1. Use `-DryRun` or `-WhatIf` before write operations.
+1. Use `-WhatIf` before write operations.
 2. Guest writes can affect Conditional Access, dynamic group rules, app/group assignments, and entitlement behavior.
 3. `-EnableGuestUpdates` is intentionally required for non-preview guest writes.
 4. In non-preview mode, write behavior is controlled by `-StrictnessMode` and preflight outcomes.

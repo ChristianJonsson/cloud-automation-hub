@@ -12,6 +12,13 @@ Current shared Entra modules:
 	- Handles cached Graph data reuse and validation.
 	- Retrieves users and verified domains when cache is unavailable or invalid.
 
+## Dependency notes
+
+- `GraphConnection.psm1` imports required Microsoft Graph modules dynamically before validating the active Graph context.
+- `GraphConnection.psm1` enforces the effective delegated scope set supplied by the calling script.
+- `GraphData.psm1` validates cached `$users` and `$verifiedDomains` data before reuse and falls back to live Graph queries when the cache shape is incomplete.
+- Policy-impact evaluation remains feature-specific by design, so `Classification.psm1` and `PolicyImpactValidation.psm1` stay under `Modules/UserTypeNullRemediation/` rather than moving into shared modules.
+
 Shared modules are intentionally provider-wide helpers. Policy-impact classification,
 preflight enforcement, and per-user impact modeling remain feature-specific and are implemented in:
 

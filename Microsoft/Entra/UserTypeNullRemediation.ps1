@@ -16,7 +16,6 @@ Policy.Read.All, Directory.Read.All, EntitlementManagement.Read.All, and RoleMan
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
-    [switch]$DryRun,
     [ValidateSet('Member', 'Guest', 'Both')]
     [string]$TargetType = 'Member',
     [switch]$UseCachedGraphResults,
@@ -30,7 +29,7 @@ param(
 if ($Help) {
     @"
 Usage:
-    .\UserTypeNullRemediation.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-StrictnessMode Strict|Balanced|Permissive] [-DryRun] [-WhatIf] [-Confirm] [-Help|-h]
+    .\UserTypeNullRemediation.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-StrictnessMode Strict|Balanced|Permissive] [-WhatIf] [-Confirm] [-Help|-h]
 
 Options:
     -TargetType
@@ -52,11 +51,10 @@ Options:
         Permissive = allows write mode to continue when EntitlementManagement checks are unavailable.
         Permissive still records partial coverage in logs/CSV metadata and blocks on other critical failures.
 
-    -DryRun
-        Preview mode. No updates are written.
-
     -WhatIf
-        Standard PowerShell simulation via ShouldProcess.
+        Preview mode. Generates CSV exports and preflight artifacts without writing user updates.
+        Per-item ShouldProcess messages are suppressed for readability on large runs;
+        review the WouldUpdate CSV exports instead.
 
     -Confirm
         Prompts before each update operation.
@@ -67,7 +65,7 @@ Options:
 Notes:
     - Skipped users are exported only when one or more skipped candidates exist:
         .\Reports\UserTypeNullRemediation\Reports_Skipped_Users\SkippedUsers-<timestamp>.csv
-    - Preview exports (DryRun/WhatIf) are written only when matching candidates exist:
+    - Preview exports (WhatIf) are written only when matching candidates exist:
         .\Reports\UserTypeNullRemediation\Reports_Would_Update_Members\WouldUpdateMembers-<timestamp>.csv
         .\Reports\UserTypeNullRemediation\Reports_Would_Update_Guests\WouldUpdateGuests-<timestamp>.csv
     - Preflight artifacts are written to:
@@ -75,7 +73,7 @@ Notes:
     - Log entries are written to .\Logs\UserUpdate.log for preview and non-preview runs.
     - Cached Graph data reuse is in-memory only and applies to the current PowerShell session.
       If cached values are not present or do not match expected structure, live Graph queries are used.
-    - Guest writes can have broader policy impact. Use -DryRun or -WhatIf first.
+    - Guest writes can have broader policy impact. Use -WhatIf first.
     - Delegated read scopes for policy checks:
         Policy.Read.All, Directory.Read.All, EntitlementManagement.Read.All,
         RoleManagement.Read.Directory.
@@ -145,7 +143,7 @@ function Export-PolicyImpactCsvIfAny {
 
     try {
         Ensure-DirectoryIfNeeded -Path (Split-Path -Path $Path -Parent)
-        $exportRows | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8
+        $exportRows | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 -WhatIf:$false
         Write-Log("${SuccessPrefix}: $Path")
     }
     catch {
@@ -177,8 +175,13 @@ Write-Host "=====================================`n" -ForegroundColor Cyan
 Write-Log("Starting UserType processing. TargetType=$TargetType")
 Write-Log("StrictnessMode set to '$StrictnessMode'.")
 
-$isPreviewMode = $DryRun.IsPresent -or [bool]$WhatIfPreference
+$isPreviewMode = [bool]$WhatIfPreference
 $policyImpactScopeMatrix = @(Get-PolicyImpactScopeMatrix)
+
+$baseRequiredScopes = @('User.Read.All', 'User.ReadWrite.All', 'Organization.Read.All')
+$policyRequiredScopes = @($policyImpactScopeMatrix | ForEach-Object { @($_.RequiredScopes) })
+$allRequiredScopes = @($baseRequiredScopes + $policyRequiredScopes | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+Write-Log("Graph delegated scopes requested for this run: $($allRequiredScopes -join ', ')")
 
 $runTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $preflightRunId = "UserTypePreflight-$runTimestamp"
@@ -197,16 +200,12 @@ Ensure-DirectoryIfNeeded -Path $skippedReviewFolder
 Ensure-DirectoryIfNeeded -Path $memberPreviewFolder -Condition $isPreviewMode
 Ensure-DirectoryIfNeeded -Path $guestPreviewFolder -Condition $isPreviewMode
 
-if ($DryRun) {
-    Write-Log("DryRun mode enabled. No update writes will be attempted.")
-}
-
 if ($WhatIfPreference) {
-    Write-Log("WhatIf mode enabled. ShouldProcess will simulate update writes.")
+    Write-Log("WhatIf mode enabled. Preview CSV exports will be written; no update writes will be attempted.")
 }
 
 if (($TargetType -in @('Guest', 'Both')) -and -not $isPreviewMode -and -not $EnableGuestUpdates) {
-    $guestSafetyError = "Guest writes requested without -EnableGuestUpdates. Use -DryRun/-WhatIf first or re-run with -EnableGuestUpdates."
+    $guestSafetyError = "Guest writes requested without -EnableGuestUpdates. Use -WhatIf first or re-run with -EnableGuestUpdates."
     Write-Log($guestSafetyError)
     Write-Error $guestSafetyError -ErrorAction Stop
 }
@@ -220,7 +219,7 @@ try {
         'Microsoft.Graph.Groups',
         'Microsoft.Graph.Identity.SignIns',
         'Microsoft.Graph.Identity.Governance'
-    ) -RequiredScopes @('User.Read.All', 'User.ReadWrite.All', 'Organization.Read.All')
+    ) -RequiredScopes $allRequiredScopes
 }
 catch {
     $graphSetupError = "Stopping script because Graph prerequisites failed: $($_.Exception.Message)"
@@ -346,7 +345,7 @@ $classifiedUsers = foreach ($user in $usersWithNoUserType) {
 
     $shouldLogClassificationCheckpoint = Test-IsCheckpointIteration -Counter $classificationCounter -Total $classificationTotal
     if ($shouldLogClassificationCheckpoint) {
-        Write-Log("Classification checkpoint ${classificationCounter} of ${classificationTotal}: evaluating $($user.UserPrincipalName)")
+        Write-Log -Message "Classification checkpoint ${classificationCounter} of ${classificationTotal}: evaluating $($user.UserPrincipalName)" -NoConsole
     }
 
     $memberClassification = $null
@@ -407,7 +406,7 @@ $classifiedUsers = foreach ($user in $usersWithNoUserType) {
         GuestReason = if ($null -ne $guestClassification) { $guestClassification.Reason } else { 'Not evaluated for this TargetType' }
         PolicyImpact = if (-not [string]::IsNullOrWhiteSpace($proposedUserType)) {
             if ($shouldLogClassificationCheckpoint) {
-                Write-Log("Classification checkpoint ${classificationCounter} of ${classificationTotal}: proposed UserType '$proposedUserType' for $($user.UserPrincipalName); evaluating policy impact.")
+                Write-Log -Message "Classification checkpoint ${classificationCounter} of ${classificationTotal}: proposed UserType '$proposedUserType' for $($user.UserPrincipalName); evaluating policy impact." -NoConsole
             }
             Get-UserPolicyImpact -User $user -ProposedUserType $proposedUserType -PolicyContext $policyImpactContext
         }
@@ -441,7 +440,7 @@ Write-Log("Confident guest candidates to update: $($guestCandidates.Count)")
 Write-Log("Skipped candidates (insufficient confidence or guest indicators): $($skippedCandidates.Count)")
 
 foreach ($skipped in $skippedCandidates) {
-    Write-Log("Skipped $($skipped.User.UserPrincipalName): $($skipped.Reason)")
+    Write-Log -Message "Skipped $($skipped.User.UserPrincipalName): $($skipped.Reason)" -NoConsole
 }
 
 Export-PolicyImpactCsvIfAny -Candidates $skippedCandidates `
@@ -506,12 +505,12 @@ foreach ($candidate in $updateCandidates) {
 
     # Log at meaningful checkpoints to keep progress bar readable in large runs.
     if ($shouldLogThisItem) {
-        Write-Log("Updating user ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason) | PolicyRisk=$($candidate.PolicyImpact.RiskLevel) | PolicySummary=$($candidate.PolicyImpact.Summary)")
+        Write-Log -Message "Updating user ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason) | PolicyRisk=$($candidate.PolicyImpact.RiskLevel) | PolicySummary=$($candidate.PolicyImpact.Summary)" -NoConsole
     }
 
-    if ($DryRun) {
+    if ($isPreviewMode) {
         if ($shouldLogThisItem) {
-            Write-Log("DRYRUN: Would update $($user.UserPrincipalName) (UserId: $($user.Id)) to UserType='$($candidate.ProposedUserType)'")
+            Write-Log -Message "WHATIF: Would update $($user.UserPrincipalName) (UserId: $($user.Id)) to UserType='$($candidate.ProposedUserType)'" -NoConsole
         }
         Start-Sleep -Milliseconds 20
         continue
@@ -526,7 +525,7 @@ foreach ($candidate in $updateCandidates) {
         Update-MgUser -UserId $user.Id -UserType $candidate.ProposedUserType -ErrorAction Stop
     }
     catch {
-        Write-Log("Failed to update $($user.UserPrincipalName): $($_.Exception.Message)")
+        Write-Log -Message "Failed to update $($user.UserPrincipalName): $($_.Exception.Message)" -NoConsole
         continue
     }
 

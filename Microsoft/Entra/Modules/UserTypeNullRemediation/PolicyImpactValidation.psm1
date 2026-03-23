@@ -113,8 +113,8 @@ function Get-PolicyImpactScopeMatrix {
         [pscustomobject]@{ Area = 'GroupAndAppAssignments'; RequiredScopes = @('Directory.Read.All'); IsCritical = $true },
         [pscustomobject]@{ Area = 'EntitlementManagement'; RequiredScopes = @('EntitlementManagement.Read.All'); IsCritical = $true },
         [pscustomobject]@{ Area = 'DirectoryRoleAssignments'; RequiredScopes = @('RoleManagement.Read.Directory'); IsCritical = $true },
-        [pscustomobject]@{ Area = 'LicensingHeuristics'; RequiredScopes = @('Organization.Read.All'); IsCritical = $false },
-        [pscustomobject]@{ Area = 'TeamsExchangeHeuristics'; RequiredScopes = @('Team.ReadBasic.All', 'Mail.ReadBasic.All'); IsCritical = $false }
+        [pscustomobject]@{ Area = 'LicensingHeuristics'; RequiredScopes = @('Organization.Read.All'); IsCritical = $false }
+        # [pscustomobject]@{ Area = 'TeamsExchangeHeuristics'; RequiredScopes = @('Team.ReadBasic.All', 'Mail.ReadBasic.All'); IsCritical = $false }
     )
 }
 
@@ -183,13 +183,14 @@ function Test-PolicyImpactPrerequisites {
     }
 
     # Teams/Exchange checks are advisory only in v1.
-    $results += [pscustomobject]@{
-        Area = 'TeamsExchangeHeuristics'
-        RequiredScopes = 'Team.ReadBasic.All; Mail.ReadBasic.All'
-        IsCritical = $false
-        Status = 'AdvisoryOnly'
-        Message = 'No direct probe in v1. Review Teams/Exchange access impact manually when applicable.'
-    }
+    # DISABLED: TeamsExchangeHeuristics and associated scopes (Team.ReadBasic.All, Mail.ReadBasic.All)
+    # $results += [pscustomobject]@{
+    #     Area = 'TeamsExchangeHeuristics'
+    #     RequiredScopes = 'Team.ReadBasic.All; Mail.ReadBasic.All'
+    #     IsCritical = $false
+    #     Status = 'AdvisoryOnly'
+    #     Message = 'No direct probe in v1. Review Teams/Exchange access impact manually when applicable.'
+    # }
 
     $criticalFailures = @($results | Where-Object { $_.IsCritical -and $_.Status -ne 'Available' })
     $criticalBlockingFindings = @($criticalFailures)
@@ -348,23 +349,28 @@ function Get-UserPolicyImpact {
     $groupMemberships = @()
     $appRoleAssignments = @()
     $entitlementAssignments = @()
+    $userAreaStatus = @{}
 
-    if ($PolicyContext.AreaStatus['GroupAndAppAssignments'] -eq 'Available') {
+    foreach ($entry in $PolicyContext.AreaStatus.GetEnumerator()) {
+        $userAreaStatus[$entry.Key] = $entry.Value
+    }
+
+    if ($userAreaStatus['GroupAndAppAssignments'] -eq 'Available') {
         try {
             $groupMemberships = @(Get-MgUserMemberOf -UserId $User.Id -All -ErrorAction Stop)
             $appRoleAssignments = @(Get-MgUserAppRoleAssignment -UserId $User.Id -All -ErrorAction Stop)
         }
         catch {
-            $PolicyContext.AreaStatus['GroupAndAppAssignments'] = 'Unavailable'
+            $userAreaStatus['GroupAndAppAssignments'] = 'Unavailable'
         }
     }
 
-    if ($PolicyContext.AreaStatus['EntitlementManagement'] -eq 'Available') {
+    if ($userAreaStatus['EntitlementManagement'] -eq 'Available') {
         try {
             $entitlementAssignments = @(Get-MgEntitlementManagementAssignment -Filter "targetId eq '$($User.Id)'" -All -ErrorAction Stop)
         }
         catch {
-            $PolicyContext.AreaStatus['EntitlementManagement'] = 'Unavailable'
+            $userAreaStatus['EntitlementManagement'] = 'Unavailable'
         }
     }
 
@@ -412,7 +418,7 @@ function Get-UserPolicyImpact {
     $directoryRoleMatches = @($PolicyContext.DirectoryRoleAssignments | Where-Object { "$($_.PrincipalId)" -eq "$($User.Id)" })
 
     $coverageLevel = 'Full'
-    $coverageFailures = @($PolicyContext.AreaStatus.GetEnumerator() | Where-Object { $_.Value -ne 'Available' -and $_.Value -ne 'AdvisoryOnly' })
+    $coverageFailures = @($userAreaStatus.GetEnumerator() | Where-Object { $_.Value -ne 'Available' -and $_.Value -ne 'AdvisoryOnly' })
     if ($coverageFailures.Count -gt 0) {
         $coverageLevel = 'Partial'
     }
@@ -433,7 +439,15 @@ function Get-UserPolicyImpact {
     if ($directoryRoleMatches.Count -gt 0) { $blockingFlags += 'DirectoryRoleAssignment' }
     if ($entitlementAssignments.Count -gt 0) { $blockingFlags += 'EntitlementAssignment' }
 
-    $summary = "CA=$($caMatches.Count); DynamicRules=$($dynamicRuleMatches.Count); GroupMemberships=$($groupMemberships.Count); AppRoles=$($appRoleAssignments.Count); Entitlements=$($entitlementAssignments.Count); DirectoryRoles=$($directoryRoleMatches.Count); Risk=$riskLevel; Coverage=$coverageLevel"
+    $coverageFailureAreas = @($coverageFailures | ForEach-Object { $_.Key } | Sort-Object -Unique)
+    $coverageFailureText = if ($coverageFailureAreas.Count -gt 0) {
+        $coverageFailureAreas -join ','
+    }
+    else {
+        'None'
+    }
+
+    $summary = "CA=$($caMatches.Count); DynamicRules=$($dynamicRuleMatches.Count); GroupMemberships=$($groupMemberships.Count); AppRoles=$($appRoleAssignments.Count); Entitlements=$($entitlementAssignments.Count); DirectoryRoles=$($directoryRoleMatches.Count); Risk=$riskLevel; Coverage=$coverageLevel; CoverageFailures=$coverageFailureText"
 
     return [pscustomobject]@{
         CoverageLevel = $coverageLevel
@@ -445,6 +459,7 @@ function Get-UserPolicyImpact {
         DirectoryRoleAssignmentCount = $directoryRoleMatches.Count
         EntitlementAssignmentCount = $entitlementAssignments.Count
         BlockingFlags = ($blockingFlags -join '; ')
+        CoverageFailureAreas = ($coverageFailureAreas -join '; ')
         Summary = $summary
     }
 }
