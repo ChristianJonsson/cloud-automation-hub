@@ -30,7 +30,7 @@ param(
 if ($Help) {
     @"
 Usage:
-    .\Update-Users-Where-UserType-Missing.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-StrictnessMode Strict|Balanced|Permissive] [-DryRun] [-WhatIf] [-Confirm] [-Help|-h]
+    .\UserTypeNullRemediation.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-StrictnessMode Strict|Balanced|Permissive] [-DryRun] [-WhatIf] [-Confirm] [-Help|-h]
 
 Options:
     -TargetType
@@ -109,7 +109,7 @@ function Ensure-DirectoryIfNeeded {
     )
 
     if ($Condition -and -not (Test-Path -Path $Path)) {
-        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        New-Item -ItemType Directory -Path $Path -Force -WhatIf:$false | Out-Null
     }
 }
 
@@ -143,8 +143,16 @@ function Export-PolicyImpactCsvIfAny {
         New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType $ProposedUserType -PolicyImpact $_.PolicyImpact -PreflightRunId $PreflightRunId -PreflightSummary $PreflightSummary
     }
 
-    $exportRows | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8
-    Write-Log("${SuccessPrefix}: $Path")
+    try {
+        Ensure-DirectoryIfNeeded -Path (Split-Path -Path $Path -Parent)
+        $exportRows | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8
+        Write-Log("${SuccessPrefix}: $Path")
+    }
+    catch {
+        $exportError = "Failed to export policy impact CSV '$Path': $($_.Exception.Message)"
+        Write-Log($exportError)
+        Write-Error $exportError -ErrorAction Stop
+    }
 }
 
 function Test-IsCheckpointIteration {
@@ -245,7 +253,8 @@ try {
         Summary = $preflightSummary
         Result = $policyPrerequisiteResult
     }
-    $preflightArtifact | ConvertTo-Json -Depth 8 | Set-Content -Path $preflightArtifactPath -Encoding UTF8
+    Ensure-DirectoryIfNeeded -Path (Split-Path -Path $preflightArtifactPath -Parent)
+    $preflightArtifact | ConvertTo-Json -Depth 8 | Set-Content -Path $preflightArtifactPath -Encoding UTF8 -WhatIf:$false
     Write-Log("Policy preflight artifact exported to: $preflightArtifactPath")
 
     if (-not $policyPrerequisiteResult.CanProceed) {
@@ -313,7 +322,33 @@ else {
     Write-Log("Domain check disabled: no verified domains were loaded, so only synced identity signals will mark members as confident.")
 }
 
+$classificationTotal = @($usersWithNoUserType).Count
+$classificationCounter = 0
+
 $classifiedUsers = foreach ($user in $usersWithNoUserType) {
+    $classificationCounter++
+
+    if ($classificationTotal -gt 0) {
+        $classificationPercent = if ($classificationCounter -ge $classificationTotal) {
+            100
+        }
+        else {
+            [int](($classificationCounter * 100.0) / $classificationTotal)
+        }
+
+        if ($classificationPercent -lt 0) { $classificationPercent = 0 }
+        if ($classificationPercent -gt 100) { $classificationPercent = 100 }
+
+        Write-Progress -Activity "Classifying users and evaluating policy impact" `
+                       -Status "Processing $classificationCounter of $classificationTotal ($classificationPercent%)" `
+                       -PercentComplete $classificationPercent
+    }
+
+    $shouldLogClassificationCheckpoint = Test-IsCheckpointIteration -Counter $classificationCounter -Total $classificationTotal
+    if ($shouldLogClassificationCheckpoint) {
+        Write-Log("Classification checkpoint ${classificationCounter} of ${classificationTotal}: evaluating $($user.UserPrincipalName)")
+    }
+
     $memberClassification = $null
     $guestClassification = $null
 
@@ -371,6 +406,9 @@ $classifiedUsers = foreach ($user in $usersWithNoUserType) {
         MemberReason = if ($null -ne $memberClassification) { $memberClassification.Reason } else { 'Not evaluated for this TargetType' }
         GuestReason = if ($null -ne $guestClassification) { $guestClassification.Reason } else { 'Not evaluated for this TargetType' }
         PolicyImpact = if (-not [string]::IsNullOrWhiteSpace($proposedUserType)) {
+            if ($shouldLogClassificationCheckpoint) {
+                Write-Log("Classification checkpoint ${classificationCounter} of ${classificationTotal}: proposed UserType '$proposedUserType' for $($user.UserPrincipalName); evaluating policy impact.")
+            }
             Get-UserPolicyImpact -User $user -ProposedUserType $proposedUserType -PolicyContext $policyImpactContext
         }
         else {
@@ -389,6 +427,9 @@ $classifiedUsers = foreach ($user in $usersWithNoUserType) {
         }
     }
 }
+
+Write-Progress -Activity "Classifying users and evaluating policy impact" -Completed
+Write-Log("Completed classification and policy impact evaluation for $classificationCounter user(s) with missing UserType.")
 
 $updateCandidates = @($classifiedUsers | Where-Object { -not [string]::IsNullOrWhiteSpace($_.ProposedUserType) })
 $memberCandidates = @($updateCandidates | Where-Object { $_.ProposedUserType -eq 'Member' })
@@ -445,7 +486,7 @@ foreach ($candidate in $updateCandidates) {
     $user = $candidate.User
 
     $counter++
-    
+
     # Use integer-safe progress math for large datasets and clamp to valid range.
     if ($counter -ge $total) {
         $percent = 100

@@ -4,11 +4,11 @@ This folder contains Entra-focused automation scripts and supporting modules.
 
 ## Script
 
-- `Update-Users-Where-UserType-Missing.ps1`
+- `UserTypeNullRemediation.ps1`
 
 ## What This Script Does
 
-`Update-Users-Where-UserType-Missing.ps1` finds users with a null `userType`, classifies them with high confidence as `Member` or `Guest`, exports audit/review CSVs, and updates `userType` based on selected target mode.
+`UserTypeNullRemediation.ps1` finds users with a null `userType`, classifies them with high confidence as `Member` or `Guest`, exports audit/review CSVs, and updates `userType` based on selected target mode.
 
 The script supports preview execution (`-DryRun` and `-WhatIf`), strictness-based preflight policy checks, and can reuse cached Graph query results from the current PowerShell session.
 
@@ -126,35 +126,35 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 ### 1) Default preview (member target)
 
 ```powershell
-.\Update-Users-Where-UserType-Missing.ps1 -DryRun
+.\UserTypeNullRemediation.ps1 -DryRun
 ```
 
 ### 2) Preview both member and guest candidates
 
 ```powershell
-.\Update-Users-Where-UserType-Missing.ps1 -TargetType Both -WhatIf
+.\UserTypeNullRemediation.ps1 -TargetType Both -WhatIf
 ```
 
 ### 3) Real member updates
 
 ```powershell
-.\Update-Users-Where-UserType-Missing.ps1 -TargetType Member
+.\UserTypeNullRemediation.ps1 -TargetType Member
 ```
 
 ### 4) Real guest updates (explicit safety gate)
 
 ```powershell
-.\Update-Users-Where-UserType-Missing.ps1 -TargetType Guest -EnableGuestUpdates
+.\UserTypeNullRemediation.ps1 -TargetType Guest -EnableGuestUpdates
 ```
 
 ### 5) Reuse cached Graph results in the same session
 
 ```powershell
 # First run builds in-session variables via live Graph queries
-. .\Update-Users-Where-UserType-Missing.ps1 -DryRun
+. .\UserTypeNullRemediation.ps1 -DryRun
 
 # Second run reuses cached $users and $verifiedDomains when valid
-. .\Update-Users-Where-UserType-Missing.ps1 -UseCachedGraphResults -DryRun
+. .\UserTypeNullRemediation.ps1 -UseCachedGraphResults -DryRun
 ```
 
 ## Cache Reuse Behavior
