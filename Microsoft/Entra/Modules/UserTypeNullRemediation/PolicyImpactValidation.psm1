@@ -1,107 +1,12 @@
-function Test-GraphProbe {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$AreaName,
-
-        [Parameter(Mandatory = $true)]
-        [string[]]$RequiredScopes,
-
-        [Parameter(Mandatory = $true)]
-        [bool]$IsCritical,
-
-        [Parameter(Mandatory = $true)]
-        [scriptblock]$ProbeScript
-    )
-
-    try {
-        & $ProbeScript
-        return [pscustomobject]@{
-            Area = $AreaName
-            RequiredScopes = ($RequiredScopes -join '; ')
-            IsCritical = $IsCritical
-            Status = 'Available'
-            Message = 'Probe succeeded.'
-        }
-    }
-    catch {
-        return [pscustomobject]@{
-            Area = $AreaName
-            RequiredScopes = ($RequiredScopes -join '; ')
-            IsCritical = $IsCritical
-            Status = 'Unavailable'
-            Message = $_.Exception.Message
-        }
-    }
-}
-
-function Get-ObjectValue {
-    param(
-        [object]$InputObject,
-        [string]$PropertyName
-    )
-
-    if ($null -eq $InputObject) {
-        return $null
-    }
-
-    if ($InputObject.PSObject.Properties.Name -contains $PropertyName) {
-        return $InputObject.$PropertyName
-    }
-
-    if ($InputObject.PSObject.Properties.Name -contains 'AdditionalProperties') {
-        $ap = $InputObject.AdditionalProperties
-        if ($ap -is [System.Collections.IDictionary] -and $ap.Contains($PropertyName)) {
-            return $ap[$PropertyName]
-        }
-    }
-
-    return $null
-}
-
-function Convert-ToStringArray {
-    param([object]$InputValue)
-
-    if ($null -eq $InputValue) {
-        return @()
-    }
-
-    if ($InputValue -is [string]) {
-        if ([string]::IsNullOrWhiteSpace($InputValue)) {
-            return @()
-        }
-
-        return @($InputValue)
-    }
-
-    if ($InputValue -is [System.Collections.IEnumerable]) {
-        $items = @()
-        foreach ($item in $InputValue) {
-            if ($null -ne $item -and -not [string]::IsNullOrWhiteSpace("$item")) {
-                $items += "$item"
-            }
-        }
-
-        return @($items)
-    }
-
-    return @("$InputValue")
-}
-
-function Get-UniqueStringArray {
-    param([string[]]$InputArray = @())
-
-    return @($InputArray | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
-}
-
-function Get-PolicyConditionList {
-    param(
-        [object]$ConditionObject,
-        [string]$PropertyName
-    )
-
-    return Get-UniqueStringArray -InputArray (Convert-ToStringArray -InputValue (Get-ObjectValue -InputObject $ConditionObject -PropertyName $PropertyName))
-}
+# Dot-source shared helpers and per-area evaluators.
+. "$PSScriptRoot\PolicyImpactHelpers.psm1"
+. "$PSScriptRoot\PolicyImpact.GroupAndAppAssignments.psm1"
+. "$PSScriptRoot\PolicyImpact.EntitlementManagement.psm1"
+. "$PSScriptRoot\PolicyImpact.ConditionalAccess.psm1"
+. "$PSScriptRoot\PolicyImpact.DynamicGroups.psm1"
+. "$PSScriptRoot\PolicyImpact.DirectoryRoleAssignments.psm1"
+. "$PSScriptRoot\PolicyImpact.LicensingHeuristics.psm1"
+. "$PSScriptRoot\PolicyImpact.TeamsExchangeHeuristics.psm1"
 
 function Get-PolicyImpactScopeMatrix {
     [CmdletBinding()]
@@ -182,14 +87,13 @@ function Test-PolicyImpactPrerequisites {
         Get-MgSubscribedSku -ErrorAction Stop | Select-Object -First 1 | Out-Null
     }
 
-    # Teams/Exchange checks are advisory only in v1.
-    # DISABLED: TeamsExchangeHeuristics and associated scopes (Team.ReadBasic.All, Mail.ReadBasic.All)
-    # $results += [pscustomobject]@{
-    #     Area = 'TeamsExchangeHeuristics'
-    #     RequiredScopes = 'Team.ReadBasic.All; Mail.ReadBasic.All'
-    #     IsCritical = $false
-    #     Status = 'AdvisoryOnly'
-    #     Message = 'No direct probe in v1. Review Teams/Exchange access impact manually when applicable.'
+    # $results += Test-GraphProbe -AreaName 'TeamsExchangeHeuristics' -RequiredScopes @('Team.ReadBasic.All', 'Mail.ReadBasic.All') -IsCritical $false -ProbeScript {
+    #     $probeResult = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users?`$top=1&`$select=id" -ErrorAction Stop
+    #     $firstUser = @($probeResult.value)[0]
+    #     if ($firstUser) {
+    #         Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($firstUser.id)/joinedTeams?`$top=1&`$select=id" -ErrorAction Stop | Out-Null
+    #         Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/users/$($firstUser.id)/mailFolders?`$top=1&`$select=id" -ErrorAction Stop | Out-Null
+    #     }
     # }
 
     $criticalFailures = @($results | Where-Object { $_.IsCritical -and $_.Status -ne 'Available' })
@@ -304,6 +208,7 @@ function Initialize-PolicyImpactContext {
         }
         catch {
             $areaStatus['ConditionalAccess'] = 'Unavailable'
+            Write-PolicyImpactLog -Level 'WARNING' -Message "Failed to load Conditional Access policies into policy context: $($_.Exception.Message)"
         }
     }
 
@@ -313,6 +218,7 @@ function Initialize-PolicyImpactContext {
         }
         catch {
             $areaStatus['DynamicGroups'] = 'Unavailable'
+            Write-PolicyImpactLog -Level 'WARNING' -Message "Failed to load dynamic groups into policy context: $($_.Exception.Message)"
         }
     }
 
@@ -322,8 +228,11 @@ function Initialize-PolicyImpactContext {
         }
         catch {
             $areaStatus['DirectoryRoleAssignments'] = 'Unavailable'
+            Write-PolicyImpactLog -Level 'WARNING' -Message "Failed to load directory role assignments into policy context: $($_.Exception.Message)"
         }
     }
+
+    Write-PolicyImpactLog -Message "Initialized policy context: CAPolicies=$($conditionalAccessPolicies.Count); DynamicGroups=$($dynamicGroups.Count); DirectoryRoleAssignments=$($directoryRoleAssignments.Count); AreaStatus=$((@($areaStatus.GetEnumerator() | ForEach-Object { \"$($_.Key)=$($_.Value)\" }) -join ', '))"
 
     return [pscustomobject]@{
         PrerequisiteResult = $PrerequisiteResult
@@ -346,76 +255,21 @@ function Get-UserPolicyImpact {
         [object]$PolicyContext
     )
 
-    $groupMemberships = @()
-    $appRoleAssignments = @()
-    $entitlementAssignments = @()
     $userAreaStatus = @{}
-
     foreach ($entry in $PolicyContext.AreaStatus.GetEnumerator()) {
         $userAreaStatus[$entry.Key] = $entry.Value
     }
 
-    if ($userAreaStatus['GroupAndAppAssignments'] -eq 'Available') {
-        try {
-            $groupMemberships = @(Get-MgUserMemberOf -UserId $User.Id -All -ErrorAction Stop)
-            $appRoleAssignments = @(Get-MgUserAppRoleAssignment -UserId $User.Id -All -ErrorAction Stop)
-        }
-        catch {
-            $userAreaStatus['GroupAndAppAssignments'] = 'Unavailable'
-        }
-    }
+    # GroupAndAppAssignments must run first — group IDs are passed to ConditionalAccess and DynamicGroups.
+    $groupData       = Invoke-GroupAndAppAssignmentsUserImpact   -User $User -UserAreaStatus $userAreaStatus
+    $entitlementData = Invoke-EntitlementManagementUserImpact    -User $User -UserAreaStatus $userAreaStatus
+    $teamsData       = Invoke-TeamsExchangeHeuristicsUserImpact  -User $User -UserAreaStatus $userAreaStatus
 
-    if ($userAreaStatus['EntitlementManagement'] -eq 'Available') {
-        try {
-            $entitlementAssignments = @(Get-MgEntitlementManagementAssignment -Filter "targetId eq '$($User.Id)'" -All -ErrorAction Stop)
-        }
-        catch {
-            $userAreaStatus['EntitlementManagement'] = 'Unavailable'
-        }
-    }
+    $memberGroupIds  = Get-UniqueStringArray -InputArray @($groupData.GroupMemberships | ForEach-Object { if ($_.Id) { "$($_.Id)" } })
 
-    $memberGroupIds = @($groupMemberships | ForEach-Object { if ($_.Id) { "$($_.Id)" } })
-    $memberGroupIds = Get-UniqueStringArray -InputArray $memberGroupIds
-
-    $caMatches = @()
-    foreach ($policy in @($PolicyContext.ConditionalAccessPolicies)) {
-        $conditions = Get-ObjectValue -InputObject $policy -PropertyName 'Conditions'
-        $usersCondition = Get-ObjectValue -InputObject $conditions -PropertyName 'Users'
-        if ($null -eq $usersCondition) {
-            continue
-        }
-
-        $includeUsers = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'IncludeUsers'
-        $excludeUsers = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'ExcludeUsers'
-        $includeGroups = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'IncludeGroups'
-        $excludeGroups = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'ExcludeGroups'
-
-        $isIncluded = ($includeUsers -contains 'All') -or ($includeUsers -contains $User.Id) -or (@($includeGroups | Where-Object { $_ -in $memberGroupIds }).Count -gt 0)
-        $isExcluded = ($excludeUsers -contains $User.Id) -or (@($excludeGroups | Where-Object { $_ -in $memberGroupIds }).Count -gt 0)
-
-        if ($isIncluded -and -not $isExcluded) {
-            $caMatches += $policy
-        }
-    }
-
-    $dynamicRuleMatches = @()
-    foreach ($group in @($PolicyContext.DynamicGroups)) {
-        $membershipRule = "$(Get-ObjectValue -InputObject $group -PropertyName 'MembershipRule')"
-        if ([string]::IsNullOrWhiteSpace($membershipRule)) {
-            continue
-        }
-
-        if ($membershipRule -match '(?i)user\.userType|userType') {
-            $dynamicRuleMatches += $group
-            continue
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($ProposedUserType) -and $membershipRule -match [regex]::Escape($ProposedUserType)) {
-            $dynamicRuleMatches += $group
-        }
-    }
-
-    $directoryRoleMatches = @($PolicyContext.DirectoryRoleAssignments | Where-Object { "$($_.PrincipalId)" -eq "$($User.Id)" })
+    $caData          = Invoke-ConditionalAccessUserImpact        -User $User -ProposedUserType $ProposedUserType -PolicyContext $PolicyContext -UserGroupIds $memberGroupIds -UserAreaStatus $userAreaStatus
+    $dynamicData     = Invoke-DynamicGroupsUserImpact            -User $User -ProposedUserType $ProposedUserType -PolicyContext $PolicyContext -UserGroupIds $memberGroupIds -UserAreaStatus $userAreaStatus
+    $roleData        = Invoke-DirectoryRoleAssignmentsUserImpact -User $User -PolicyContext $PolicyContext -UserAreaStatus $userAreaStatus
 
     $coverageLevel = 'Full'
     $coverageFailures = @($userAreaStatus.GetEnumerator() | Where-Object { $_.Value -ne 'Available' -and $_.Value -ne 'AdvisoryOnly' })
@@ -424,43 +278,45 @@ function Get-UserPolicyImpact {
     }
 
     $riskLevel = 'None'
-    if ($directoryRoleMatches.Count -gt 0 -or $caMatches.Count -gt 0) {
+    if ($roleData.MatchCount -gt 0 -or $caData.MatchCount -gt 0) {
         $riskLevel = 'High'
     }
-    elseif ($entitlementAssignments.Count -gt 0 -or $appRoleAssignments.Count -gt 0) {
+    elseif ($entitlementData.AssignmentCount -gt 0 -or $groupData.AppRoleCount -gt 0) {
         $riskLevel = 'Medium'
     }
-    elseif ($dynamicRuleMatches.Count -gt 0 -or $groupMemberships.Count -gt 0) {
+    elseif ($dynamicData.RuleMatchCount -gt 0 -or $groupData.GroupMembershipCount -gt 0) {
+        $riskLevel = 'Low'
+    }
+    elseif ($teamsData.TeamsCount -gt 0) {
         $riskLevel = 'Low'
     }
 
     $blockingFlags = @()
-    if ($caMatches.Count -gt 0) { $blockingFlags += 'ConditionalAccessMatch' }
-    if ($directoryRoleMatches.Count -gt 0) { $blockingFlags += 'DirectoryRoleAssignment' }
-    if ($entitlementAssignments.Count -gt 0) { $blockingFlags += 'EntitlementAssignment' }
+    if ($caData.MatchCount -gt 0) { $blockingFlags += 'ConditionalAccessMatch' }
+    if ($roleData.MatchCount -gt 0) { $blockingFlags += 'DirectoryRoleAssignment' }
+    if ($entitlementData.AssignmentCount -gt 0) { $blockingFlags += 'EntitlementAssignment' }
 
     $coverageFailureAreas = @($coverageFailures | ForEach-Object { $_.Key } | Sort-Object -Unique)
-    $coverageFailureText = if ($coverageFailureAreas.Count -gt 0) {
-        $coverageFailureAreas -join ','
-    }
-    else {
-        'None'
-    }
+    $coverageFailureText = if ($coverageFailureAreas.Count -gt 0) { $coverageFailureAreas -join ',' } else { 'None' }
 
-    $summary = "CA=$($caMatches.Count); DynamicRules=$($dynamicRuleMatches.Count); GroupMemberships=$($groupMemberships.Count); AppRoles=$($appRoleAssignments.Count); Entitlements=$($entitlementAssignments.Count); DirectoryRoles=$($directoryRoleMatches.Count); Risk=$riskLevel; Coverage=$coverageLevel; CoverageFailures=$coverageFailureText"
+    $summary = "CA=$($caData.MatchCount); DynamicRules=$($dynamicData.RuleMatchCount); GroupMemberships=$($groupData.GroupMembershipCount); AppRoles=$($groupData.AppRoleCount); Entitlements=$($entitlementData.AssignmentCount); DirectoryRoles=$($roleData.MatchCount); Teams=$($teamsData.TeamsCount); Mailbox=$($teamsData.HasMailbox); Risk=$riskLevel; Coverage=$coverageLevel; CoverageFailures=$coverageFailureText"
+
+    Write-PolicyImpactLog -Message "Policy impact evaluated for $($User.UserPrincipalName) ($($User.Id)): $summary"
 
     return [pscustomobject]@{
-        CoverageLevel = $coverageLevel
-        RiskLevel = $riskLevel
-        ConditionalAccessCount = $caMatches.Count
-        DynamicGroupRuleCount = $dynamicRuleMatches.Count
-        GroupMembershipCount = $groupMemberships.Count
-        AppRoleAssignmentCount = $appRoleAssignments.Count
-        DirectoryRoleAssignmentCount = $directoryRoleMatches.Count
-        EntitlementAssignmentCount = $entitlementAssignments.Count
-        BlockingFlags = ($blockingFlags -join '; ')
-        CoverageFailureAreas = ($coverageFailureAreas -join '; ')
-        Summary = $summary
+        CoverageLevel                = $coverageLevel
+        RiskLevel                    = $riskLevel
+        ConditionalAccessCount       = $caData.MatchCount
+        DynamicGroupRuleCount        = $dynamicData.RuleMatchCount
+        GroupMembershipCount         = $groupData.GroupMembershipCount
+        AppRoleAssignmentCount       = $groupData.AppRoleCount
+        DirectoryRoleAssignmentCount = $roleData.MatchCount
+        EntitlementAssignmentCount   = $entitlementData.AssignmentCount
+        TeamsCount                   = $teamsData.TeamsCount
+        HasMailbox                   = $teamsData.HasMailbox
+        BlockingFlags                = ($blockingFlags -join '; ')
+        CoverageFailureAreas         = ($coverageFailureAreas -join '; ')
+        Summary                      = $summary
     }
 }
 

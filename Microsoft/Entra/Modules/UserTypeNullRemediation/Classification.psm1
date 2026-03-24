@@ -63,6 +63,8 @@ function New-PolicyImpactRecord {
             AppRoleAssignmentCount = 0
             DirectoryRoleAssignmentCount = 0
             EntitlementAssignmentCount = 0
+            TeamsCount = 0
+            HasMailbox = $false
             BlockingFlags = ''
             Summary = 'Policy impact was not evaluated for this record.'
         }
@@ -103,6 +105,8 @@ function New-PolicyImpactRecord {
         AppRoleAssignmentCount = $impact.AppRoleAssignmentCount
         DirectoryRoleAssignmentCount = $impact.DirectoryRoleAssignmentCount
         EntitlementAssignmentCount = $impact.EntitlementAssignmentCount
+        TeamsCount = $impact.TeamsCount
+        HasMailbox = $impact.HasMailbox
         BlockingFlags = $impact.BlockingFlags
         PolicyImpactNotes = $impact.Summary
     }

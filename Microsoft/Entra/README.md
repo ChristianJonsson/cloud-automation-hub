@@ -35,9 +35,6 @@ Policy-impact preflight scopes (required for full policy coverage)
 - `EntitlementManagement.Read.All`
 - `RoleManagement.Read.Directory`
 
-Advisory policy-impact scopes (optional in v1; used for expanded heuristic visibility)
-
-Note: TeamsExchangeHeuristics scopes (Team.ReadBasic.All, Mail.ReadBasic.All) are currently disabled.
 
 ## Policy Impact Evaluation Areas
 
@@ -45,19 +42,21 @@ The script evaluates these policy-impact areas when building preflight and per-u
 
 Critical areas (write mode can block when unavailable, depending on `-StrictnessMode`)
 
-- Conditional Access
-- DynamicGroups
-- GroupAndAppAssignments
-- EntitlementManagement
-- DirectoryRoleAssignments
+- **ConditionalAccess** — fetches all CA policies via `Get-MgIdentityConditionalAccessPolicy -All` (requires `Policy.Read.All`). For each user, evaluates `Conditions.Users`: included when `IncludeUsers` contains `All` or the user's ID, or when any `IncludeGroups` entry matches a group the user belongs to; excluded when `ExcludeUsers` or `ExcludeGroups` matches. A policy is a match when included and not excluded. Matching policy count is recorded as `ConditionalAccessCount` and elevates `PolicyRiskLevel` to `High`. **Not evaluated:** whether the policy is enabled or disabled (disabled policies still count as matches), `GuestsOrExternalUsers` conditions, named locations, device compliance, sign-in risk, and application-scoped conditions.
+
+- **DynamicGroups** — fetches all dynamic-membership groups via `Get-MgGroup -Filter "groupTypes/any(c:c eq 'DynamicMembership')"` (requires `Directory.Read.All`), retrieving `Id`, `DisplayName`, and `MembershipRule`. For each user, filters groups whose `MembershipRule` references `user.userType` or `userType` (case-insensitive), or contains the proposed UserType value as a literal string. For each matched group, calls `POST /groups/{id}/evaluateDynamicMembership` with the user's ID to determine current membership status, then applies simple pattern extraction (`-eq`/`-ne` comparisons on `user.userType`) to estimate post-change membership. Reports `ImpactDirection` per group: `WouldJoin`, `WouldLeave`, `RequiresManualReview`, or `NoChange` (excluded from count). Count of impacted groups is recorded as `DynamicGroupRuleCount` and contributes to `PolicyRiskLevel` `Low`. Evaluation failures are written to the log as warnings. **Not evaluated:** complex rule expressions beyond simple `-eq`/`-ne` comparisons on `user.userType`; groups where the evaluate API call fails are reported as `RequiresManualReview`.
+
+- **GroupAndAppAssignments** — per-user: calls `Get-MgUserMemberOf -All` to retrieve all group memberships, and `Get-MgUserAppRoleAssignment -All` to retrieve app role assignments (both require `Directory.Read.All`). Counts are recorded as `GroupMembershipCount` and `AppRoleAssignmentCount`. App role assignments elevate `PolicyRiskLevel` to `Medium`; group memberships elevate to `Low`. Group memberships are also used as input for the ConditionalAccess and DynamicGroups per-user checks. **Not evaluated:** transitive group-of-group nesting beyond what `Get-MgUserMemberOf` returns directly.
+
+- **EntitlementManagement** — per-user: calls `Get-MgEntitlementManagementAssignment -Filter "targetId eq '<userId>'" -All` (requires `EntitlementManagement.Read.All`). Count is recorded as `EntitlementAssignmentCount`, elevates `PolicyRiskLevel` to `Medium`, and adds `EntitlementAssignment` to `BlockingFlags`. In `Permissive` mode, an unavailable entitlement scope does not block writes but is recorded as partial coverage. **Not evaluated:** individual access package policies and their userType eligibility rules.
+
+- **DirectoryRoleAssignments** — fetches all directory role assignments once via `Get-MgRoleManagementDirectoryRoleAssignment -All` (requires `RoleManagement.Read.Directory`). Per-user: filters assignments where `PrincipalId` matches the user's ID. Count is recorded as `DirectoryRoleAssignmentCount`, elevates `PolicyRiskLevel` to `High`, and adds `DirectoryRoleAssignment` to `BlockingFlags`. **Not evaluated:** PIM eligible assignments or group-based role assignments (only directly assigned roles are matched).
 
 Advisory areas
 
-- LicensingHeuristics
+- **LicensingHeuristics** — probe only: verifies `Get-MgSubscribedSku` is callable via `Organization.Read.All` and that `Microsoft.Graph.Identity.DirectoryManagement` is imported. No per-user licensing impact is computed in the current implementation; the probe only validates scope availability. Does not affect `PolicyRiskLevel` or any per-user counter.
 
-Disabled advisory area
-
-- TeamsExchangeHeuristics is currently disabled and its associated scopes are not requested.
+- **TeamsExchangeHeuristics** — **disabled.** The scope matrix entry and prerequisite probe are commented out. Per-user Teams and mailbox probes are not executed; `TeamsCount` and `HasMailbox` are not populated in policy impact output. `Team.ReadBasic.All` and `Mail.ReadBasic.All` are not requested.
 
 Scope behavior notes:
 
@@ -100,6 +99,10 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
   - `Permissive`: allows write mode to continue when only EntitlementManagement checks are unavailable.
   - `Permissive` still records partial policy coverage in log/CSV outputs and blocks on other critical failures.
 
+- `-TopUsers <count>`
+  - Limits classification, policy evaluation, and update/preview processing to the first `N` users from the set where `userType` is null.
+  - Default: `0` (process all matching users).
+
 - `-WhatIf`
   - Preview mode. No update writes are attempted.
   - Writes preview CSV exports and preflight artifacts for review.
@@ -120,23 +123,27 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
   - `Reports/UserTypeNullRemediation/Reports_Would_Update_Members/WouldUpdateMembers-<timestamp>.csv`
   - `Reports/UserTypeNullRemediation/Reports_Would_Update_Guests/WouldUpdateGuests-<timestamp>.csv`
 
+- Non-preview update outcome CSVs (only when that result set is non-empty):
+  - `Reports/UserTypeNullRemediation/Reports_Updated_Users/UpdatedUsers-<timestamp>.csv`
+  - `Reports/UserTypeNullRemediation/Reports_Failed_Updates/FailedUpdates-<timestamp>.csv`
+
 - Preflight artifact:
-  - `Reports/UserTypeNullRemediation/Preflight-<timestamp>.json`
+  - Preview runs (`-WhatIf`): `Reports/UserTypeNullRemediation/Preflight.preview-<timestamp>.json`
+  - Non-preview runs: `Reports/UserTypeNullRemediation/Preflight-<timestamp>.json`
   - Includes compact summary plus per-area policy prerequisite results for audit sign-off.
 
 - Log file:
-  - `Logs/UserUpdate.log`
-  - Written for both preview (`-WhatIf`) and non-preview runs.
+  - Preview runs (`-WhatIf`): `Logs/UserUpdate.preview.log`
+  - Non-preview runs: `Logs/UserUpdate.log`
+  - Records every user classification result, every update or preview action, and policy-evaluation warnings/errors.
 
 - Terminal progress logging during updates:
-  - To keep `Write-Progress` readable, progress checkpoint messages are shown only at:
-    - first user
-    - every 50 users
-    - last user
+  - The console keeps `Write-Progress` output readable by avoiding per-user console spam.
+  - Detailed per-user activity is written to the log file instead.
 
 - Exported CSV impact metadata:
   - `PreflightRunId`, `PreflightSummary`, `PolicyCoverageLevel`, `PolicyRiskLevel`
-  - Impact counters for Conditional Access, dynamic groups, memberships, app roles, directory roles, and entitlement assignments
+  - Impact counters for Conditional Access, dynamic groups, memberships, app roles, directory roles, entitlement assignments, Teams, and mailbox presence
   - `BlockingFlags` and computed `PolicyImpactNotes`
 
 - Exported CSV column groups:
@@ -145,7 +152,7 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
   - Account state: `AccountEnabled`, `CreatedDateTime`, `CreationType`, `ExternalUserState`
   - Sync and identity signals: `OnPremisesSyncEnabled`, `OnPremisesImmutableId`, `OnPremisesSecurityIdentifier`, `AssignedLicensesCount`, `IdentitiesSummary`
   - Classification: `CurrentUserType`, `ProposedUserType`, `Reason`
-  - Policy impact: `PolicyCoverageLevel`, `PolicyRiskLevel`, `ConditionalAccessCount`, `DynamicGroupRuleCount`, `GroupMembershipCount`, `AppRoleAssignmentCount`, `DirectoryRoleAssignmentCount`, `EntitlementAssignmentCount`, `BlockingFlags`, `PolicyImpactNotes`
+  - Policy impact: `PolicyCoverageLevel`, `PolicyRiskLevel`, `ConditionalAccessCount`, `DynamicGroupRuleCount`, `GroupMembershipCount`, `AppRoleAssignmentCount`, `DirectoryRoleAssignmentCount`, `EntitlementAssignmentCount`, `TeamsCount`, `HasMailbox`, `BlockingFlags`, `PolicyImpactNotes`
   - Diagnostic extension attributes: `ExtensionAttribute1` through `ExtensionAttribute15`
 
 ## Usage Examples
@@ -182,6 +189,12 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 
 # Second run reuses cached $users and $verifiedDomains when valid
 . .\UserTypeNullRemediation.ps1 -UseCachedGraphResults -WhatIf
+```
+
+### 6) Evaluate only the first 25 matching users
+
+```powershell
+.\UserTypeNullRemediation.ps1 -TopUsers 25 -WhatIf
 ```
 
 ## Cache Reuse Behavior
