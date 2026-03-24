@@ -1,12 +1,12 @@
 # Dot-source shared helpers and per-area evaluators.
-. "$PSScriptRoot\PolicyImpactHelpers.psm1"
-. "$PSScriptRoot\PolicyImpact.GroupAndAppAssignments.psm1"
-. "$PSScriptRoot\PolicyImpact.EntitlementManagement.psm1"
-. "$PSScriptRoot\PolicyImpact.ConditionalAccess.psm1"
-. "$PSScriptRoot\PolicyImpact.DynamicGroups.psm1"
-. "$PSScriptRoot\PolicyImpact.DirectoryRoleAssignments.psm1"
-. "$PSScriptRoot\PolicyImpact.LicensingHeuristics.psm1"
-. "$PSScriptRoot\PolicyImpact.TeamsExchangeHeuristics.psm1"
+. "$PSScriptRoot\PolicyImpactHelpers.ps1"
+. "$PSScriptRoot\PolicyImpact.GroupAndAppAssignments.ps1"
+. "$PSScriptRoot\PolicyImpact.EntitlementManagement.ps1"
+. "$PSScriptRoot\PolicyImpact.ConditionalAccess.ps1"
+. "$PSScriptRoot\PolicyImpact.DynamicGroups.ps1"
+. "$PSScriptRoot\PolicyImpact.DirectoryRoleAssignments.ps1"
+. "$PSScriptRoot\PolicyImpact.LicensingHeuristics.ps1"
+. "$PSScriptRoot\PolicyImpact.TeamsExchangeHeuristics.ps1"
 
 function Get-PolicyImpactScopeMatrix {
     [CmdletBinding()]
@@ -232,7 +232,8 @@ function Initialize-PolicyImpactContext {
         }
     }
 
-    Write-PolicyImpactLog -Message "Initialized policy context: CAPolicies=$($conditionalAccessPolicies.Count); DynamicGroups=$($dynamicGroups.Count); DirectoryRoleAssignments=$($directoryRoleAssignments.Count); AreaStatus=$((@($areaStatus.GetEnumerator() | ForEach-Object { \"$($_.Key)=$($_.Value)\" }) -join ', '))"
+    $areaStatusStr = @($areaStatus.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '
+    Write-PolicyImpactLog -Message "Initialized policy context: CAPolicies=$($conditionalAccessPolicies.Count); DynamicGroups=$($dynamicGroups.Count); DirectoryRoleAssignments=$($directoryRoleAssignments.Count); AreaStatus=$areaStatusStr"
 
     return [pscustomobject]@{
         PrerequisiteResult = $PrerequisiteResult
@@ -265,7 +266,8 @@ function Get-UserPolicyImpact {
     $entitlementData = Invoke-EntitlementManagementUserImpact    -User $User -UserAreaStatus $userAreaStatus
     $teamsData       = Invoke-TeamsExchangeHeuristicsUserImpact  -User $User -UserAreaStatus $userAreaStatus
 
-    $memberGroupIds  = Get-UniqueStringArray -InputArray @($groupData.GroupMemberships | ForEach-Object { if ($_.Id) { "$($_.Id)" } })
+    $memberGroupIds  = @(Get-UniqueStringArray -InputArray @($groupData.GroupMemberships | ForEach-Object { if ($_.Id) { "$($_.Id)" } }))
+    if ($null -eq $memberGroupIds) { $memberGroupIds = @() }
 
     $caData          = Invoke-ConditionalAccessUserImpact        -User $User -ProposedUserType $ProposedUserType -PolicyContext $PolicyContext -UserGroupIds $memberGroupIds -UserAreaStatus $userAreaStatus
     $dynamicData     = Invoke-DynamicGroupsUserImpact            -User $User -ProposedUserType $ProposedUserType -PolicyContext $PolicyContext -UserGroupIds $memberGroupIds -UserAreaStatus $userAreaStatus

@@ -12,6 +12,7 @@ Requires Microsoft Graph PowerShell authentication with permission to read and u
 Use -UseCachedGraphResults to reuse cached `$users` and `$verifiedDomains` variables from the current PowerShell session.
 For policy-impact preflight checks, delegated read scopes are also required:
 Policy.Read.All, Directory.Read.All, EntitlementManagement.Read.All, RoleManagement.Read.Directory.
+The script validates report, export, and preflight artifact paths before Graph operations begin.
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -83,6 +84,8 @@ Notes:
         .\Reports\UserTypeNullRemediation\Preflight-<timestamp>.json (non-preview)
     - Log entries are written to .\Logs\UserUpdate.preview.log for preview (-WhatIf) runs
       and .\Logs\UserUpdate.log for non-preview runs.
+        - Report/export/preflight paths are validated before Graph operations begin.
+            Invalid or empty path values stop execution early with a clear error.
     - Cached Graph data reuse is in-memory only and applies to the current PowerShell session.
       If cached values are not present or do not match expected structure, live Graph queries are used.
     - Guest writes can have broader policy impact. Use -WhatIf first.
@@ -129,71 +132,10 @@ Import-Module (Join-Path $commonSharedModuleRoot 'Logging.psm1') -Force
 Import-Module (Join-Path $entraSharedModuleRoot 'GraphConnection.psm1') -Force
 Import-Module (Join-Path $entraSharedModuleRoot 'GraphData.psm1') -Force
 Import-Module (Join-Path $featureModuleRoot 'Classification.psm1') -Force
+Import-Module (Join-Path $featureModuleRoot 'PolicyImpactExport.psm1') -Force
 Import-Module (Join-Path $featureModuleRoot 'PolicyImpactValidation.psm1') -Force
 $Global:LogFilePath = Get-DefaultUserUpdateLogPath -PreviewMode:$isPreviewMode -BaseDirectory $PSScriptRoot
 Set-LogFilePath -Path $Global:LogFilePath
-
-function Ensure-DirectoryIfNeeded {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-
-        [bool]$Condition = $true
-    )
-
-    if ($Condition -and -not (Test-Path -Path $Path)) {
-        New-Item -ItemType Directory -Path $Path -Force -WhatIf:$false | Out-Null
-    }
-}
-
-function Export-PolicyImpactCsvIfAny {
-    param(
-        [object[]]$Candidates = @(),
-
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-
-        [string]$ProposedUserType = '',
-
-        [Parameter(Mandatory = $true)]
-        [string]$SuccessPrefix,
-
-        [Parameter(Mandatory = $true)]
-        [string]$EmptyMessage,
-
-        [string]$PreflightRunId = '',
-
-        [string]$PreflightSummary = ''
-    )
-
-    $candidateArray = @($Candidates)
-    if ($candidateArray.Count -eq 0) {
-        Write-Log($EmptyMessage)
-        return
-    }
-
-    $exportRows = $candidateArray | ForEach-Object {
-        $resolvedProposedUserType = if (-not [string]::IsNullOrWhiteSpace($ProposedUserType)) {
-            $ProposedUserType
-        }
-        else {
-            "$($_.ProposedUserType)"
-        }
-
-        New-PolicyImpactRecord -User $_.User -Reason $_.Reason -ProposedUserType $resolvedProposedUserType -PolicyImpact $_.PolicyImpact -PreflightRunId $PreflightRunId -PreflightSummary $PreflightSummary
-    }
-
-    try {
-        Ensure-DirectoryIfNeeded -Path (Split-Path -Path $Path -Parent)
-        $exportRows | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 -WhatIf:$false
-        Write-Log("${SuccessPrefix}: $Path")
-    }
-    catch {
-        $exportError = "Failed to export policy impact CSV '$Path': $($_.Exception.Message)"
-        Write-Log($exportError)
-        Write-Error $exportError -ErrorAction Stop
-    }
-}
 
 # Console banner
 Write-Host "=====================================" -ForegroundColor Cyan
@@ -214,26 +156,97 @@ Write-Log("Graph delegated scopes requested for this run: $($allRequiredScopes -
 
 $runTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $preflightRunId = "UserTypePreflight-$runTimestamp"
-$reportsRootFolder = Join-Path $PSScriptRoot 'Reports\UserTypeNullRemediation'
-$skippedReviewFolder = Join-Path $reportsRootFolder 'Reports_Skipped_Users'
-$memberPreviewFolder = Join-Path $reportsRootFolder 'Reports_Would_Update_Members'
-$guestPreviewFolder = Join-Path $reportsRootFolder 'Reports_Would_Update_Guests'
-$updatedUsersFolder = Join-Path $reportsRootFolder 'Reports_Updated_Users'
-$failedUpdatesFolder = Join-Path $reportsRootFolder 'Reports_Failed_Updates'
-$skippedExportPath = Join-Path $skippedReviewFolder "SkippedUsers-$runTimestamp.csv"
-$memberPreviewExportPath = Join-Path $memberPreviewFolder "WouldUpdateMembers-$runTimestamp.csv"
-$guestPreviewExportPath = Join-Path $guestPreviewFolder "WouldUpdateGuests-$runTimestamp.csv"
-$updatedUsersExportPath = Join-Path $updatedUsersFolder "UpdatedUsers-$runTimestamp.csv"
-$failedUpdatesExportPath = Join-Path $failedUpdatesFolder "FailedUpdates-$runTimestamp.csv"
+$reportFolderMap = [ordered]@{
+    ReportsRoot = Join-Path $PSScriptRoot 'Reports\UserTypeNullRemediation'
+}
+$reportFolderMap['SkippedReview'] = Join-Path $reportFolderMap.ReportsRoot 'Reports_Skipped_Users'
+$reportFolderMap['MemberPreview'] = Join-Path $reportFolderMap.ReportsRoot 'Reports_Would_Update_Members'
+$reportFolderMap['GuestPreview'] = Join-Path $reportFolderMap.ReportsRoot 'Reports_Would_Update_Guests'
+$reportFolderMap['UpdatedUsers'] = Join-Path $reportFolderMap.ReportsRoot 'Reports_Updated_Users'
+$reportFolderMap['FailedUpdates'] = Join-Path $reportFolderMap.ReportsRoot 'Reports_Failed_Updates'
+
+$reportsRootFolder = $reportFolderMap.ReportsRoot
+$skippedReviewFolder = $reportFolderMap.SkippedReview
+$memberPreviewFolder = $reportFolderMap.MemberPreview
+$guestPreviewFolder = $reportFolderMap.GuestPreview
+$updatedUsersFolder = $reportFolderMap.UpdatedUsers
+$failedUpdatesFolder = $reportFolderMap.FailedUpdates
+
+$exportFileMap = [ordered]@{
+    Skipped = "SkippedUsers-$runTimestamp.csv"
+    MemberPreview = "WouldUpdateMembers-$runTimestamp.csv"
+    GuestPreview = "WouldUpdateGuests-$runTimestamp.csv"
+    Updated = "UpdatedUsers-$runTimestamp.csv"
+    Failed = "FailedUpdates-$runTimestamp.csv"
+}
+
+$skippedExportPath = Join-Path $skippedReviewFolder $exportFileMap.Skipped
+$memberPreviewExportPath = Join-Path $memberPreviewFolder $exportFileMap.MemberPreview
+$guestPreviewExportPath = Join-Path $guestPreviewFolder $exportFileMap.GuestPreview
+$updatedUsersExportPath = Join-Path $updatedUsersFolder $exportFileMap.Updated
+$failedUpdatesExportPath = Join-Path $failedUpdatesFolder $exportFileMap.Failed
 $preflightArtifactPath = Get-DefaultUserUpdatePreflightArtifactPath -Timestamp $runTimestamp -PreviewMode:$isPreviewMode -BaseDirectory $PSScriptRoot
 
-Ensure-DirectoryIfNeeded -Path $reportsRootFolder
+function Assert-RunPathsValid {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$PathEntries
+    )
 
-Ensure-DirectoryIfNeeded -Path $skippedReviewFolder
-Ensure-DirectoryIfNeeded -Path $memberPreviewFolder -Condition $isPreviewMode
-Ensure-DirectoryIfNeeded -Path $guestPreviewFolder -Condition $isPreviewMode
-Ensure-DirectoryIfNeeded -Path $updatedUsersFolder -Condition (-not $isPreviewMode)
-Ensure-DirectoryIfNeeded -Path $failedUpdatesFolder -Condition (-not $isPreviewMode)
+    $invalidPathChars = [System.IO.Path]::GetInvalidPathChars()
+
+    foreach ($entry in @($PathEntries)) {
+        $pathLabel = "$(if ($entry.Label) { $entry.Label } else { 'UnlabeledPath' })"
+        $pathValue = "$(if ($null -ne $entry.Path) { $entry.Path } else { '' })"
+
+        if ([string]::IsNullOrWhiteSpace($pathValue)) {
+            $message = "Path validation failed for '$pathLabel': value is empty."
+            Write-Log($message)
+            Write-Error $message -ErrorAction Stop
+        }
+
+        if ($pathValue.IndexOfAny($invalidPathChars) -ge 0) {
+            $message = "Path validation failed for '$pathLabel': path contains invalid filesystem characters. Value='$pathValue'"
+            Write-Log($message)
+            Write-Error $message -ErrorAction Stop
+        }
+
+        if (-not (Test-Path -Path $pathValue -IsValid)) {
+            $message = "Path validation failed for '$pathLabel': path is not valid for this filesystem. Value='$pathValue'"
+            Write-Log($message)
+            Write-Error $message -ErrorAction Stop
+        }
+    }
+}
+
+$runPathEntries = @(
+    [pscustomobject]@{ Label = 'ReportsRoot'; Path = $reportsRootFolder }
+    [pscustomobject]@{ Label = 'SkippedReviewFolder'; Path = $skippedReviewFolder }
+    [pscustomobject]@{ Label = 'MemberPreviewFolder'; Path = $memberPreviewFolder }
+    [pscustomobject]@{ Label = 'GuestPreviewFolder'; Path = $guestPreviewFolder }
+    [pscustomobject]@{ Label = 'UpdatedUsersFolder'; Path = $updatedUsersFolder }
+    [pscustomobject]@{ Label = 'FailedUpdatesFolder'; Path = $failedUpdatesFolder }
+    [pscustomobject]@{ Label = 'SkippedExportPath'; Path = $skippedExportPath }
+    [pscustomobject]@{ Label = 'MemberPreviewExportPath'; Path = $memberPreviewExportPath }
+    [pscustomobject]@{ Label = 'GuestPreviewExportPath'; Path = $guestPreviewExportPath }
+    [pscustomobject]@{ Label = 'UpdatedUsersExportPath'; Path = $updatedUsersExportPath }
+    [pscustomobject]@{ Label = 'FailedUpdatesExportPath'; Path = $failedUpdatesExportPath }
+    [pscustomobject]@{ Label = 'PreflightArtifactPath'; Path = $preflightArtifactPath }
+)
+Assert-RunPathsValid -PathEntries $runPathEntries
+
+$directoryInitializationPlans = @(
+    [pscustomobject]@{ Path = $reportsRootFolder; Condition = $true }
+    [pscustomobject]@{ Path = $skippedReviewFolder; Condition = $true }
+    [pscustomobject]@{ Path = $memberPreviewFolder; Condition = $isPreviewMode }
+    [pscustomobject]@{ Path = $guestPreviewFolder; Condition = $isPreviewMode }
+    [pscustomobject]@{ Path = $updatedUsersFolder; Condition = (-not $isPreviewMode) }
+    [pscustomobject]@{ Path = $failedUpdatesFolder; Condition = (-not $isPreviewMode) }
+)
+
+foreach ($directoryPlan in $directoryInitializationPlans) {
+    Initialize-DirectoryIfNeeded -Path $directoryPlan.Path -Condition $directoryPlan.Condition
+}
 
 if ($WhatIfPreference) {
     Write-Log("WhatIf mode enabled. Preview CSV exports will be written; no update writes will be attempted.")
@@ -287,7 +300,7 @@ try {
         Summary = $preflightSummary
         Result = $policyPrerequisiteResult
     }
-    Ensure-DirectoryIfNeeded -Path (Split-Path -Path $preflightArtifactPath -Parent)
+    Initialize-DirectoryIfNeeded -Path (Split-Path -Path $preflightArtifactPath -Parent)
     $preflightArtifact | ConvertTo-Json -Depth 8 | Set-Content -Path $preflightArtifactPath -Encoding UTF8 -WhatIf:$false
     Write-Log("Policy preflight artifact exported to: $preflightArtifactPath")
 
@@ -490,28 +503,39 @@ foreach ($skipped in $skippedCandidates) {
     Write-Log -Message "Skipped $($skipped.User.UserPrincipalName): $($skipped.Reason)" -NoConsole
 }
 
-Export-PolicyImpactCsvIfAny -Candidates $skippedCandidates `
-                            -Path $skippedExportPath `
-                            -ProposedUserType '' `
-                            -SuccessPrefix 'Skipped users exported to' `
-                            -EmptyMessage 'Skipped users export not created because there are no skipped candidates.' `
-                            -PreflightRunId $preflightRunId `
-                            -PreflightSummary $preflightSummary
+$preUpdateExportPlans = @(
+    [pscustomobject]@{
+        Candidates = $skippedCandidates
+        Path = $skippedExportPath
+        ProposedUserType = ''
+        SuccessPrefix = 'Skipped users exported to'
+        EmptyMessage = 'Skipped users export not created because there are no skipped candidates.'
+        Enabled = $true
+    }
+    [pscustomobject]@{
+        Candidates = $memberCandidates
+        Path = $memberPreviewExportPath
+        ProposedUserType = 'Member'
+        SuccessPrefix = 'Preview member candidates exported to'
+        EmptyMessage = 'Preview member export not created because there are no member candidates.'
+        Enabled = $isPreviewMode
+    }
+    [pscustomobject]@{
+        Candidates = $guestCandidates
+        Path = $guestPreviewExportPath
+        ProposedUserType = 'Guest'
+        SuccessPrefix = 'Preview guest candidates exported to'
+        EmptyMessage = 'Preview guest export not created because there are no guest candidates.'
+        Enabled = $isPreviewMode
+    }
+)
 
-if ($isPreviewMode) {
-    Export-PolicyImpactCsvIfAny -Candidates $memberCandidates `
-                                -Path $memberPreviewExportPath `
-                                -ProposedUserType 'Member' `
-                                -SuccessPrefix 'Preview member candidates exported to' `
-                                -EmptyMessage 'Preview member export not created because there are no member candidates.' `
-                                -PreflightRunId $preflightRunId `
-                                -PreflightSummary $preflightSummary
-
-    Export-PolicyImpactCsvIfAny -Candidates $guestCandidates `
-                                -Path $guestPreviewExportPath `
-                                -ProposedUserType 'Guest' `
-                                -SuccessPrefix 'Preview guest candidates exported to' `
-                                -EmptyMessage 'Preview guest export not created because there are no guest candidates.' `
+foreach ($exportPlan in @($preUpdateExportPlans | Where-Object { $_.Enabled })) {
+    Export-PolicyImpactCsvIfAny -Candidates $exportPlan.Candidates `
+                                -Path $exportPlan.Path `
+                                -ProposedUserType $exportPlan.ProposedUserType `
+                                -SuccessPrefix $exportPlan.SuccessPrefix `
+                                -EmptyMessage $exportPlan.EmptyMessage `
                                 -PreflightRunId $preflightRunId `
                                 -PreflightSummary $preflightSummary
 }
@@ -597,18 +621,31 @@ foreach ($candidate in $updateCandidates) {
 
 Write-Progress -Activity $(if ($isPreviewMode) { "Previewing UserType updates ($TargetType) - WhatIf" } else { "Updating UserType ($TargetType)" }) -Completed
 
-if (-not $isPreviewMode) {
-    Export-PolicyImpactCsvIfAny -Candidates $successfulUpdates `
-                                -Path $updatedUsersExportPath `
-                                -SuccessPrefix 'Updated users exported to' `
-                                -EmptyMessage 'Updated users export not created because there were no successful updates.' `
-                                -PreflightRunId $preflightRunId `
-                                -PreflightSummary $preflightSummary
+$postUpdateExportPlans = @(
+    [pscustomobject]@{
+        Candidates = $successfulUpdates
+        Path = $updatedUsersExportPath
+        ProposedUserType = ''
+        SuccessPrefix = 'Updated users exported to'
+        EmptyMessage = 'Updated users export not created because there were no successful updates.'
+        Enabled = (-not $isPreviewMode)
+    }
+    [pscustomobject]@{
+        Candidates = $failedUpdates
+        Path = $failedUpdatesExportPath
+        ProposedUserType = ''
+        SuccessPrefix = 'Failed updates exported to'
+        EmptyMessage = 'Failed updates export not created because there were no failed updates.'
+        Enabled = (-not $isPreviewMode)
+    }
+)
 
-    Export-PolicyImpactCsvIfAny -Candidates $failedUpdates `
-                                -Path $failedUpdatesExportPath `
-                                -SuccessPrefix 'Failed updates exported to' `
-                                -EmptyMessage 'Failed updates export not created because there were no failed updates.' `
+foreach ($exportPlan in @($postUpdateExportPlans | Where-Object { $_.Enabled })) {
+    Export-PolicyImpactCsvIfAny -Candidates $exportPlan.Candidates `
+                                -Path $exportPlan.Path `
+                                -ProposedUserType $exportPlan.ProposedUserType `
+                                -SuccessPrefix $exportPlan.SuccessPrefix `
+                                -EmptyMessage $exportPlan.EmptyMessage `
                                 -PreflightRunId $preflightRunId `
                                 -PreflightSummary $preflightSummary
 }

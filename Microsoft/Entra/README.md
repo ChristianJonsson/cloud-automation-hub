@@ -72,8 +72,11 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 
 - `Modules/Shared/GraphData.psm1`
 - `Modules/UserTypeNullRemediation/Classification.psm1`
+- `Modules/UserTypeNullRemediation/PolicyImpactExport.psm1`
 - `Modules/UserTypeNullRemediation/PolicyImpactValidation.psm1`
 - `../Common/Modules/Shared/Logging.psm1`
+
+`PolicyImpactExport.psm1` owns the policy-impact CSV contract for this workflow: row shaping, export directory preparation, and CSV writing. It remains feature-specific by design because the exported schema includes remediation-specific preflight metadata, classification output, and policy-impact counters.
 
 ## Parameters
 
@@ -215,6 +218,7 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 2. Guest writes can affect Conditional Access, dynamic group rules, app/group assignments, and entitlement behavior.
 3. `-EnableGuestUpdates` is intentionally required for non-preview guest writes.
 4. In non-preview mode, write behavior is controlled by `-StrictnessMode` and preflight outcomes.
+5. Report/export/preflight paths are validated early; invalid path values fail fast before Graph processing.
 5. If entitlement preflight checks are unavailable due to missing authorization, preview still works, but write behavior depends on strictness and criticality.
 
 ## Related Layout Documentation
