@@ -24,7 +24,11 @@ function Invoke-DynamicGroupsUserImpact {
     $dynamicRuleMatches = @()
 
     if ($UserAreaStatus['DynamicGroups'] -ne 'Available') {
-        return [pscustomobject]@{ RuleMatches = $dynamicRuleMatches; RuleMatchCount = 0 }
+        return [pscustomobject]@{
+            RuleMatches = $dynamicRuleMatches
+            RuleMatchCount = 0
+            RuleDetails = @()
+        }
     }
 
     foreach ($group in @($PolicyContext.DynamicGroups)) {
@@ -100,5 +104,27 @@ function Invoke-DynamicGroupsUserImpact {
         }
     }
 
-    return [pscustomobject]@{ RuleMatches = $dynamicRuleMatches; RuleMatchCount = $dynamicRuleMatches.Count }
+    $ruleDetails = @(
+        $dynamicRuleMatches |
+            ForEach-Object {
+                [pscustomobject]@{
+                    GroupId = "$(Get-ObjectValue -InputObject $_.Group -PropertyName 'Id')"
+                    GroupName = "$(Get-ObjectValue -InputObject $_.Group -PropertyName 'DisplayName')"
+                    ImpactDirection = "$($_.ImpactDirection)"
+                    IsCurrentMember = [bool]$_.IsCurrentMember
+                }
+            } |
+            ForEach-Object {
+                if ([string]::IsNullOrWhiteSpace($_.GroupName)) {
+                    $_.GroupName = "[UnnamedGroup:$($_.GroupId)]"
+                }
+                $_
+            }
+    )
+
+    return [pscustomobject]@{
+        RuleMatches = $dynamicRuleMatches
+        RuleMatchCount = $dynamicRuleMatches.Count
+        RuleDetails = $ruleDetails
+    }
 }

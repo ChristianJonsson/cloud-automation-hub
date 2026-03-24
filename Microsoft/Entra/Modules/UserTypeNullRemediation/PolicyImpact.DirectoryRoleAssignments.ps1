@@ -20,8 +20,39 @@ function Invoke-DirectoryRoleAssignmentsUserImpact {
         $directoryRoleMatches = @($PolicyContext.DirectoryRoleAssignments | Where-Object { "$($_.PrincipalId)" -eq "$($User.Id)" })
     }
 
+    $roleNameById = @{}
+    if ($null -ne $PolicyContext -and $null -ne $PolicyContext.DirectoryRoleDefinitionNameMap) {
+        foreach ($entry in $PolicyContext.DirectoryRoleDefinitionNameMap.GetEnumerator()) {
+            $roleNameById["$($entry.Key)"] = "$($entry.Value)"
+        }
+    }
+
+    $matchDetails = @(
+        $directoryRoleMatches |
+            ForEach-Object {
+                $roleDefinitionId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'RoleDefinitionId')"
+                if ([string]::IsNullOrWhiteSpace($roleDefinitionId)) {
+                    $roleDefinitionId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'roleDefinitionId')"
+                }
+
+                $roleName = if ($roleNameById.ContainsKey($roleDefinitionId)) {
+                    $roleNameById[$roleDefinitionId]
+                }
+                else {
+                    "[RoleDefinition:$roleDefinitionId]"
+                }
+
+                [pscustomobject]@{
+                    RoleDefinitionId = $roleDefinitionId
+                    RoleName = $roleName
+                    AssignmentId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'Id')"
+                }
+            }
+    )
+
     return [pscustomobject]@{
         Matches    = $directoryRoleMatches
         MatchCount = $directoryRoleMatches.Count
+        MatchDetails = $matchDetails
     }
 }

@@ -50,6 +50,88 @@ function Get-NormalizedNonEmptyStringArray {
     )
 }
 
+function Test-IsTransientGraphError {
+    param([string]$Message)
+
+    $normalizedMessage = "$Message".ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($normalizedMessage)) {
+        return $false
+    }
+
+    $transientTokens = @(
+        'an error occurred while sending the request',
+        'too many requests',
+        'request timed out',
+        'timed out',
+        'temporarily unavailable',
+        'service unavailable',
+        'internal server error',
+        'bad gateway',
+        'gateway timeout',
+        'http status code 429',
+        'http status code 500',
+        'http status code 502',
+        'http status code 503',
+        'http status code 504',
+        'connection reset',
+        'connection was closed',
+        'task was canceled',
+        'name resolution'
+    )
+
+    foreach ($token in $transientTokens) {
+        if ($normalizedMessage.Contains($token)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Invoke-GraphOperationWithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Operation,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OperationName,
+
+        [ValidateRange(1, 10)]
+        [int]$MaxAttempts = 4,
+
+        [ValidateRange(1, 60)]
+        [int]$InitialDelaySeconds = 2,
+
+        [ValidateRange(1, 120)]
+        [int]$MaxDelaySeconds = 30
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            return & $Operation
+        }
+        catch {
+            $errorMessage = $_.Exception.Message
+            $isTransient = Test-IsTransientGraphError -Message $errorMessage
+
+            if (-not $isTransient -or $attempt -ge $MaxAttempts) {
+                throw
+            }
+
+            $baseDelaySeconds = [Math]::Min($MaxDelaySeconds, [int]([Math]::Pow(2, $attempt - 1) * $InitialDelaySeconds))
+            $jitterMilliseconds = Get-Random -Minimum 100 -Maximum 901
+            $delaySeconds = [Math]::Min($MaxDelaySeconds, $baseDelaySeconds + ($jitterMilliseconds / 1000.0))
+
+            Write-Log("Transient Graph error during '$OperationName' (attempt $attempt of $MaxAttempts): $errorMessage")
+            Write-Log("Retrying '$OperationName' in $([Math]::Round($delaySeconds, 2)) seconds.")
+
+            Start-Sleep -Milliseconds ([int]($delaySeconds * 1000))
+        }
+    }
+
+    throw "Unexpected retry loop termination for operation '$OperationName'."
+}
+
 function Test-CachedUsersSelectedProperties {
     param(
         [string[]]$RequiredGraphProperties = @()
@@ -90,7 +172,9 @@ function Get-TenantVerifiedDomains {
     }
 
     try {
-        $organization = Get-MgOrganization -Property VerifiedDomains -ErrorAction Stop | Select-Object -First 1
+        $organization = Invoke-GraphOperationWithRetry -OperationName 'Get-MgOrganization verified domains query' -Operation {
+            Get-MgOrganization -Property VerifiedDomains -ErrorAction Stop | Select-Object -First 1
+        }
         $domains = @($organization.VerifiedDomains.Name | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         Write-Log("Loaded $($domains.Count) verified tenant domains for confidence checks.")
         return $domains
@@ -212,7 +296,11 @@ function Get-UsersFromGraphOrCache {
 
     if (-not $usedCachedUsers) {
         Write-Log('Retrieving users from Microsoft Graph... This will take several minutes...')
-        $users = @(Get-MgUser -All -ConsistencyLevel eventual -Property $Properties)
+        $users = @(
+            Invoke-GraphOperationWithRetry -OperationName 'Get-MgUser users listing query' -Operation {
+                Get-MgUser -All -ConsistencyLevel eventual -Property $Properties -ErrorAction Stop
+            }
+        )
         $Global:usersSelectedProperties = @($Properties)
         Write-Log("Found $($users.Count) users from Graph query.")
     }

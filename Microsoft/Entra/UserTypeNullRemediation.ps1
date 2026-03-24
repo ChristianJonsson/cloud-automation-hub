@@ -25,6 +25,7 @@ param(
     [string]$StrictnessMode = 'Balanced',
     [ValidateRange(0, 2147483647)]
     [int]$TopUsers = 0,
+    [switch]$IncludePolicyImpactNamesInLog,
     [Alias('h')]
     [switch]$Help
 )
@@ -32,7 +33,7 @@ param(
 if ($Help) {
     @"
 Usage:
-    .\UserTypeNullRemediation.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-StrictnessMode Strict|Balanced|Permissive] [-TopUsers <count>] [-WhatIf] [-Confirm] [-Help|-h]
+    .\UserTypeNullRemediation.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-StrictnessMode Strict|Balanced|Permissive] [-TopUsers <count>] [-IncludePolicyImpactNamesInLog] [-WhatIf] [-Confirm] [-Help|-h]
 
 Options:
     -TargetType
@@ -58,6 +59,10 @@ Options:
         Limits classification, policy evaluation, and update/preview processing to the first N users
         from the set of accounts where userType is null.
         Default: 0 (process all matching users).
+
+    -IncludePolicyImpactNamesInLog
+        Includes per-user policy impact name details in log lines for candidate processing.
+        Default behavior keeps logs concise and writes only aggregate count/risk summary.
 
     -WhatIf
         Preview mode. Generates CSV exports and preflight artifacts without writing user updates.
@@ -118,7 +123,8 @@ Notes:
         not executed. TeamsCount and HasMailbox will be absent from policy impact output.
       Non-preview runs stop before writes when critical policy checks are unavailable.
     - Each run writes a compact preflight summary to log and a detailed preflight JSON artifact.
-    - Exported CSV rows include preflight metadata and computed policy-impact counters.
+    - Exported CSV rows include preflight metadata, computed policy-impact counters,
+      and policy/group/role/entitlement detail-name columns with JSON detail payloads.
 "@ | Write-Host
     return
 }
@@ -579,7 +585,12 @@ foreach ($candidate in $updateCandidates) {
                     -Status "Processing $counter of $total ($percent%)" `
                     -PercentComplete $percent
 
-    Write-Log -Message "Processing update candidate ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason) | PolicyRisk=$($candidate.PolicyImpact.RiskLevel) | PolicySummary=$($candidate.PolicyImpact.Summary)" -NoConsole
+    $detailNameLogSegment = ''
+    if ($IncludePolicyImpactNamesInLog) {
+        $detailNameLogSegment = " | CAPolicies=$($candidate.PolicyImpact.ConditionalAccessPolicyNames) | DynamicGroups=$($candidate.PolicyImpact.DynamicGroupNames) | GroupMemberships=$($candidate.PolicyImpact.GroupMembershipNames) | AppAssignments=$($candidate.PolicyImpact.AppRoleAssignmentNames) | DirectoryRoles=$($candidate.PolicyImpact.DirectoryRoleNames) | Entitlements=$($candidate.PolicyImpact.EntitlementPackageNames)"
+    }
+
+    Write-Log -Message "Processing update candidate ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason) | PolicyRisk=$($candidate.PolicyImpact.RiskLevel) | PolicySummary=$($candidate.PolicyImpact.Summary)$detailNameLogSegment" -NoConsole
 
     if ($isPreviewMode) {
         Write-Log -Message "WHATIF: Would update $($user.UserPrincipalName) (UserId: $($user.Id)) to UserType='$($candidate.ProposedUserType)'" -NoConsole

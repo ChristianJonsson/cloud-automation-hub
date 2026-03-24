@@ -106,6 +106,10 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
   - Limits classification, policy evaluation, and update/preview processing to the first `N` users from the set where `userType` is null.
   - Default: `0` (process all matching users).
 
+- `-IncludePolicyImpactNamesInLog`
+  - Adds per-user policy impact name details to processing log lines.
+  - Default: disabled (concise aggregate-only log output).
+
 - `-WhatIf`
   - Preview mode. No update writes are attempted.
   - Writes preview CSV exports and preflight artifacts for review.
@@ -147,6 +151,10 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 - Exported CSV impact metadata:
   - `PreflightRunId`, `PreflightSummary`, `PolicyCoverageLevel`, `PolicyRiskLevel`
   - Impact counters for Conditional Access, dynamic groups, memberships, app roles, directory roles, entitlement assignments, Teams, and mailbox presence
+  - Impact detail text columns for names (semicolon-delimited) and JSON detail columns for machine parsing:
+    `ConditionalAccessPolicyNames`, `ConditionalAccessPolicyDetailsJson`, `DynamicGroupNames`, `DynamicGroupImpactDetailsJson`,
+    `GroupMembershipNames`, `GroupMembershipDetailsJson`, `AppRoleAssignmentNames`, `AppRoleAssignmentDetailsJson`,
+    `DirectoryRoleNames`, `DirectoryRoleDetailsJson`, `EntitlementPackageNames`, `EntitlementPackageDetailsJson`
   - `BlockingFlags` and computed `PolicyImpactNotes`
 
 - Exported CSV column groups:
@@ -155,7 +163,7 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
   - Account state: `AccountEnabled`, `CreatedDateTime`, `CreationType`, `ExternalUserState`
   - Sync and identity signals: `OnPremisesSyncEnabled`, `OnPremisesImmutableId`, `OnPremisesSecurityIdentifier`, `AssignedLicensesCount`, `IdentitiesSummary`
   - Classification: `CurrentUserType`, `ProposedUserType`, `Reason`
-  - Policy impact: `PolicyCoverageLevel`, `PolicyRiskLevel`, `ConditionalAccessCount`, `DynamicGroupRuleCount`, `GroupMembershipCount`, `AppRoleAssignmentCount`, `DirectoryRoleAssignmentCount`, `EntitlementAssignmentCount`, `TeamsCount`, `HasMailbox`, `BlockingFlags`, `PolicyImpactNotes`
+  - Policy impact: `PolicyCoverageLevel`, `PolicyRiskLevel`, `ConditionalAccessCount`, `ConditionalAccessPolicyNames`, `ConditionalAccessPolicyDetailsJson`, `DynamicGroupRuleCount`, `DynamicGroupNames`, `DynamicGroupImpactDetailsJson`, `GroupMembershipCount`, `GroupMembershipNames`, `GroupMembershipDetailsJson`, `AppRoleAssignmentCount`, `AppRoleAssignmentNames`, `AppRoleAssignmentDetailsJson`, `DirectoryRoleAssignmentCount`, `DirectoryRoleNames`, `DirectoryRoleDetailsJson`, `EntitlementAssignmentCount`, `EntitlementPackageNames`, `EntitlementPackageDetailsJson`, `TeamsCount`, `HasMailbox`, `BlockingFlags`, `PolicyImpactNotes`
   - Diagnostic extension attributes: `ExtensionAttribute1` through `ExtensionAttribute15`
 
 ## Usage Examples

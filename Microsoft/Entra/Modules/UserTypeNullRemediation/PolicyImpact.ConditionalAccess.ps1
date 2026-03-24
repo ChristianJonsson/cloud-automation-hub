@@ -48,5 +48,25 @@ function Invoke-ConditionalAccessUserImpact {
         }
     }
 
-    return [pscustomobject]@{ Matches = $caMatches; MatchCount = $caMatches.Count }
+    $matchDetails = @(
+        $caMatches |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Id = "$(Get-ObjectValue -InputObject $_ -PropertyName 'Id')"
+                    DisplayName = "$(Get-ObjectValue -InputObject $_ -PropertyName 'DisplayName')"
+                }
+            } |
+            ForEach-Object {
+                if ([string]::IsNullOrWhiteSpace($_.DisplayName)) {
+                    $_.DisplayName = "[UnnamedPolicy:$($_.Id)]"
+                }
+                $_
+            }
+    )
+
+    return [pscustomobject]@{
+        Matches = $caMatches
+        MatchCount = $caMatches.Count
+        MatchDetails = $matchDetails
+    }
 }

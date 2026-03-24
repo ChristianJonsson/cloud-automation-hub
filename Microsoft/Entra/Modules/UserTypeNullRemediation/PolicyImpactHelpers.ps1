@@ -68,8 +68,11 @@ function Get-ObjectValue {
 
     if ($InputObject.PSObject.Properties.Name -contains 'AdditionalProperties') {
         $ap = $InputObject.AdditionalProperties
-        if ($ap -is [System.Collections.IDictionary] -and $ap.Contains($PropertyName)) {
-            return $ap[$PropertyName]
+        $dictionary = $ap -as [System.Collections.IDictionary]
+        if ($null -ne $dictionary) {
+            if (@($dictionary.Keys) -contains $PropertyName) {
+                return $dictionary[$PropertyName]
+            }
         }
     }
 
