@@ -23,10 +23,15 @@ function Invoke-ConditionalAccessUserImpact {
     )
 
     $caMatches = @()
+    $matchDetails = @()
 
     if ($UserAreaStatus['ConditionalAccess'] -ne 'Available') {
-        return [pscustomobject]@{ Matches = $caMatches; MatchCount = 0 }
+        return [pscustomobject]@{ Matches = $caMatches; MatchCount = 0; MatchDetails = @() }
     }
+
+    $currentIsGuest = ("$($User.UserType)" -eq 'Guest')
+    $proposedUserTypeResolved = if ([string]::IsNullOrWhiteSpace($ProposedUserType)) { "$($User.UserType)" } else { "$ProposedUserType" }
+    $postChangeIsGuest = ($proposedUserTypeResolved -eq 'Guest')
 
     foreach ($policy in @($PolicyContext.ConditionalAccessPolicies)) {
         $conditions = Get-ObjectValue -InputObject $policy -PropertyName 'Conditions'
@@ -39,34 +44,73 @@ function Invoke-ConditionalAccessUserImpact {
         $excludeUsers = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'ExcludeUsers'
         $includeGroups = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'IncludeGroups'
         $excludeGroups = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'ExcludeGroups'
+        $includeGuestExternal = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'IncludeGuestsOrExternalUsers'
+        $excludeGuestExternal = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'ExcludeGuestsOrExternalUsers'
 
-        $isIncluded = ($includeUsers -contains 'All') -or ($includeUsers -contains $User.Id) -or (@($includeGroups | Where-Object { $_ -in $UserGroupIds }).Count -gt 0)
-        $isExcluded = ($excludeUsers -contains $User.Id) -or (@($excludeGroups | Where-Object { $_ -in $UserGroupIds }).Count -gt 0)
+        $currentGuestIncluded = ($currentIsGuest -and $includeGuestExternal.Count -gt 0)
+        $postGuestIncluded = ($postChangeIsGuest -and $includeGuestExternal.Count -gt 0)
+        $currentGuestExcluded = ($currentIsGuest -and $excludeGuestExternal.Count -gt 0)
+        $postGuestExcluded = ($postChangeIsGuest -and $excludeGuestExternal.Count -gt 0)
 
-        if ($isIncluded -and -not $isExcluded) {
+        $isCurrentlyIncluded =
+            ($includeUsers -contains 'All') -or
+            ($includeUsers -contains $User.Id) -or
+            (@($includeGroups | Where-Object { $_ -in $UserGroupIds }).Count -gt 0) -or
+            $currentGuestIncluded
+
+        $isPostChangeIncluded =
+            ($includeUsers -contains 'All') -or
+            ($includeUsers -contains $User.Id) -or
+            (@($includeGroups | Where-Object { $_ -in $UserGroupIds }).Count -gt 0) -or
+            $postGuestIncluded
+
+        $isCurrentlyExcluded =
+            ($excludeUsers -contains $User.Id) -or
+            (@($excludeGroups | Where-Object { $_ -in $UserGroupIds }).Count -gt 0) -or
+            $currentGuestExcluded
+
+        $isPostChangeExcluded =
+            ($excludeUsers -contains $User.Id) -or
+            (@($excludeGroups | Where-Object { $_ -in $UserGroupIds }).Count -gt 0) -or
+            $postGuestExcluded
+
+        $currentlyApplies = ($isCurrentlyIncluded -and -not $isCurrentlyExcluded)
+        $postChangeApplies = ($isPostChangeIncluded -and -not $isPostChangeExcluded)
+
+        $direction = if (-not $currentlyApplies -and $postChangeApplies) {
+            'WouldStartApplying'
+        }
+        elseif ($currentlyApplies -and -not $postChangeApplies) {
+            'WouldStopApplying'
+        }
+        else {
+            'NoChange'
+        }
+
+        if ($currentlyApplies -or $postChangeApplies) {
             $caMatches += $policy
+
+            $policyId = "$(Get-ObjectValue -InputObject $policy -PropertyName 'Id')"
+            $policyName = "$(Get-ObjectValue -InputObject $policy -PropertyName 'DisplayName')"
+            if ([string]::IsNullOrWhiteSpace($policyName)) {
+                $policyName = "[UnnamedPolicy:$policyId]"
+            }
+
+            $matchDetails += [pscustomobject]@{
+                Id = $policyId
+                DisplayName = $policyName
+                CurrentState = Convert-StateToPolicyStateLabel -State $currentlyApplies
+                PostChangeState = Convert-StateToPolicyStateLabel -State $postChangeApplies
+                ImpactDirection = Convert-ImpactDirectionToReportLabel -Direction $direction
+                Confidence = 'High'
+                EvidenceSource = 'ConditionalAccessPolicy.Users'
+            }
         }
     }
 
-    $matchDetails = @(
-        $caMatches |
-            ForEach-Object {
-                [pscustomobject]@{
-                    Id = "$(Get-ObjectValue -InputObject $_ -PropertyName 'Id')"
-                    DisplayName = "$(Get-ObjectValue -InputObject $_ -PropertyName 'DisplayName')"
-                }
-            } |
-            ForEach-Object {
-                if ([string]::IsNullOrWhiteSpace($_.DisplayName)) {
-                    $_.DisplayName = "[UnnamedPolicy:$($_.Id)]"
-                }
-                $_
-            }
-    )
-
     return [pscustomobject]@{
         Matches = $caMatches
-        MatchCount = $caMatches.Count
+        MatchCount = @($matchDetails | Where-Object { $_.ImpactDirection -ne 'NoMaterialChange' }).Count
         MatchDetails = $matchDetails
     }
 }

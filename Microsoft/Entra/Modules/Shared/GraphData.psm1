@@ -272,12 +272,12 @@ function Get-UsersFromGraphOrCache {
     $usedCachedUsers = $false
 
     if ($UseCachedGraphResults) {
+        $cachedUsersVariable = Get-Variable -Name users -Scope Global -ErrorAction SilentlyContinue
         $cachedSelectionValidation = Test-CachedUsersSelectedProperties -RequiredGraphProperties $Properties
         if (-not $cachedSelectionValidation.IsReusable) {
             Write-Log("Cached users variable could not be reused. Reason: $($cachedSelectionValidation.Reason)")
         }
 
-        $cachedUsersVariable = Get-Variable -Name users -Scope Global -ErrorAction SilentlyContinue
         if ($cachedSelectionValidation.IsReusable -and $null -eq $cachedUsersVariable) {
             Write-Log('Cached users variable not found in global session scope. Live Graph query will be used.')
         }
@@ -287,6 +287,18 @@ function Get-UsersFromGraphOrCache {
                 $users = @($cachedUsersValidation.Users)
                 $usedCachedUsers = $true
                 Write-Log("Using cached users variable. $($cachedUsersValidation.Reason)")
+            }
+            else {
+                Write-Log("Cached users variable could not be reused. Reason: $($cachedUsersValidation.Reason)")
+            }
+        }
+        elseif ($null -ne $cachedUsersVariable) {
+            $cachedUsersValidation = Test-CachedUsersData -CandidateUsers $cachedUsersVariable.Value -RequiredProperties $RequiredCachedUserProperties
+            if ($cachedUsersValidation.IsReusable) {
+                $users = @($cachedUsersValidation.Users)
+                $usedCachedUsers = $true
+                $Global:usersSelectedProperties = @($Properties)
+                Write-Log("Using cached users variable after direct property validation. $($cachedUsersValidation.Reason)")
             }
             else {
                 Write-Log("Cached users variable could not be reused. Reason: $($cachedUsersValidation.Reason)")

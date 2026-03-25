@@ -122,3 +122,36 @@ function Get-PolicyConditionList {
 
     return Get-UniqueStringArray -InputArray (Convert-ToStringArray -InputValue (Get-ObjectValue -InputObject $ConditionObject -PropertyName $PropertyName))
 }
+
+function Convert-ImpactDirectionToReportLabel {
+    param([string]$Direction)
+
+    switch -Regex ($Direction) {
+        '^WouldStartApplying$' { return 'StartsApplying' }
+        '^WouldStopApplying$' { return 'StopsApplying' }
+        '^WouldJoin$' { return 'GainsAccess' }
+        '^WouldLeave$' { return 'LosesAccess' }
+        '^WouldGain$' { return 'GainsAccess' }
+        '^WouldLose$' { return 'LosesAccess' }
+        '^NoChange$' { return 'NoMaterialChange' }
+        '^RequiresManualReview$' { return 'ManualReview' }
+        '^ManualReview$' { return 'ManualReview' }
+        default {
+            if ([string]::IsNullOrWhiteSpace($Direction)) {
+                return 'NoMaterialChange'
+            }
+
+            return "$Direction"
+        }
+    }
+}
+
+function Convert-StateToPolicyStateLabel {
+    param([bool]$State)
+
+    if ($State) {
+        return 'Applies'
+    }
+
+    return 'DoesNotApply'
+}

@@ -81,9 +81,12 @@ function New-PolicyImpactRecord {
             RiskLevel = 'Unknown'
             ConditionalAccessCount = 0
             ConditionalAccessPolicyNames = ''
+            ConditionalAccessDirections = ''
+            ConditionalAccessPolicyTransitions = ''
             ConditionalAccessPolicyDetailsJson = '[]'
             DynamicGroupRuleCount = 0
             DynamicGroupNames = ''
+            DynamicGroupImpactDirections = ''
             DynamicGroupImpactDetailsJson = '[]'
             GroupMembershipCount = 0
             GroupMembershipNames = ''
@@ -97,6 +100,9 @@ function New-PolicyImpactRecord {
             EntitlementAssignmentCount = 0
             EntitlementPackageNames = ''
             EntitlementPackageDetailsJson = '[]'
+            LicensingImpactCount = 0
+            LicensingImpactDirections = ''
+            LicensingImpactDetailsJson = '[]'
             TeamsCount = 0
             HasMailbox = $false
             BlockingFlags = ''
@@ -131,9 +137,12 @@ function New-PolicyImpactRecord {
         PolicyRiskLevel = $impact.RiskLevel
         ConditionalAccessCount = $impact.ConditionalAccessCount
         ConditionalAccessPolicyNames = $impact.ConditionalAccessPolicyNames
+        ConditionalAccessDirections = $impact.ConditionalAccessDirections
+        ConditionalAccessPolicyTransitions = $impact.ConditionalAccessPolicyTransitions
         ConditionalAccessPolicyDetailsJson = $impact.ConditionalAccessPolicyDetailsJson
         DynamicGroupRuleCount = $impact.DynamicGroupRuleCount
         DynamicGroupNames = $impact.DynamicGroupNames
+        DynamicGroupImpactDirections = $impact.DynamicGroupImpactDirections
         DynamicGroupImpactDetailsJson = $impact.DynamicGroupImpactDetailsJson
         GroupMembershipCount = $impact.GroupMembershipCount
         GroupMembershipNames = $impact.GroupMembershipNames
@@ -147,6 +156,9 @@ function New-PolicyImpactRecord {
         EntitlementAssignmentCount = $impact.EntitlementAssignmentCount
         EntitlementPackageNames = $impact.EntitlementPackageNames
         EntitlementPackageDetailsJson = $impact.EntitlementPackageDetailsJson
+        LicensingImpactCount = $impact.LicensingImpactCount
+        LicensingImpactDirections = $impact.LicensingImpactDirections
+        LicensingImpactDetailsJson = $impact.LicensingImpactDetailsJson
         TeamsCount = $impact.TeamsCount
         HasMailbox = $impact.HasMailbox
         BlockingFlags = $impact.BlockingFlags

@@ -17,18 +17,27 @@ function Invoke-EntitlementManagementUserImpact {
 
     if ($UserAreaStatus['EntitlementManagement'] -eq 'Available') {
         try {
-            $entitlementAssignments = @(Get-MgEntitlementManagementAssignment -Filter "targetId eq '$($User.Id)'" -All -ErrorAction Stop)
+            $entitlementAssignments = @(
+                Get-MgEntitlementManagementAssignment `
+                    -Filter "target/objectid eq '$($User.Id)'" `
+                    -ExpandProperty @('target', 'accessPackage') `
+                    -All `
+                    -ErrorAction Stop
+            )
         }
         catch {
-            try {
-                $entitlementAssignments = @(Get-MgEntitlementManagementAssignment -Filter "target/objectId eq '$($User.Id)'" -All -ErrorAction Stop)
-            }
-            catch {
-                $UserAreaStatus['EntitlementManagement'] = 'Unavailable'
-                Write-PolicyImpactLog -Level 'ERROR' -Message "Entitlement evaluation failed for $($User.UserPrincipalName) ($($User.Id)): $($_.Exception.Message)"
-            }
+            $UserAreaStatus['EntitlementManagement'] = 'Unavailable'
+            Write-PolicyImpactLog -Level 'ERROR' -Message "Entitlement evaluation failed for $($User.UserPrincipalName) ($($User.Id)): $($_.Exception.Message)"
         }
     }
+
+    $entitlementAssignments = @(
+        $entitlementAssignments |
+            Where-Object {
+                $assignmentState = "$(Get-ObjectValue -InputObject $_ -PropertyName 'State')"
+                -not [string]::Equals($assignmentState, 'Expired', [System.StringComparison]::OrdinalIgnoreCase)
+            }
+    )
 
     $accessPackageNameById = @{}
     if ($null -ne $PolicyContext -and $null -ne $PolicyContext.AccessPackageNameMap) {
@@ -44,8 +53,18 @@ function Invoke-EntitlementManagementUserImpact {
                 if ([string]::IsNullOrWhiteSpace($accessPackageId)) {
                     $accessPackageId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'accessPackageId')"
                 }
+                if ([string]::IsNullOrWhiteSpace($accessPackageId)) {
+                    $accessPackage = Get-ObjectValue -InputObject $_ -PropertyName 'AccessPackage'
+                    $accessPackageId = "$(Get-ObjectValue -InputObject $accessPackage -PropertyName 'Id')"
+                }
 
-                $packageName = if ($accessPackageNameById.ContainsKey($accessPackageId)) {
+                $expandedAccessPackage = Get-ObjectValue -InputObject $_ -PropertyName 'AccessPackage'
+                $expandedAccessPackageName = "$(Get-ObjectValue -InputObject $expandedAccessPackage -PropertyName 'DisplayName')"
+
+                $packageName = if (-not [string]::IsNullOrWhiteSpace($expandedAccessPackageName)) {
+                    $expandedAccessPackageName
+                }
+                elseif ($accessPackageNameById.Keys -contains $accessPackageId) {
                     $accessPackageNameById[$accessPackageId]
                 }
                 else {
@@ -56,6 +75,8 @@ function Invoke-EntitlementManagementUserImpact {
                     AssignmentId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'Id')"
                     AccessPackageId = $accessPackageId
                     AccessPackageName = $packageName
+                    State = "$(Get-ObjectValue -InputObject $_ -PropertyName 'State')"
+                    Status = "$(Get-ObjectValue -InputObject $_ -PropertyName 'Status')"
                 }
             }
     )

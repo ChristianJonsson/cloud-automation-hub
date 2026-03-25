@@ -37,6 +37,8 @@ function Invoke-DynamicGroupsUserImpact {
             continue
         }
 
+        $usedMembershipListFallback = $false
+
         $refersToUserType = $membershipRule -match '(?i)user\.userType|userType'
         $refersToProposedType = -not [string]::IsNullOrWhiteSpace($ProposedUserType) -and
                                 $membershipRule -match [regex]::Escape($ProposedUserType)
@@ -57,16 +59,14 @@ function Invoke-DynamicGroupsUserImpact {
             $evaluateSuccess = $true
         }
         catch {
-            Write-PolicyImpactLog -Level 'WARNING' -Message "Dynamic membership evaluation requires manual review for user $($User.UserPrincipalName) ($($User.Id)) in group $($group.DisplayName) ($($group.Id)): $($_.Exception.Message)"
+            Write-PolicyImpactLog -Level 'WARNING' -Message "Dynamic membership evaluation failed for user $($User.UserPrincipalName) ($($User.Id)) in group $($group.DisplayName) ($($group.Id)); falling back to group membership list for current membership: $($_.Exception.Message)"
         }
 
         if (-not $evaluateSuccess) {
-            $dynamicRuleMatches += [pscustomobject]@{
-                Group           = $group
-                ImpactDirection = 'RequiresManualReview'
-                IsCurrentMember = $false
-            }
-            continue
+            $groupId = "$(Get-ObjectValue -InputObject $group -PropertyName 'Id')"
+            $isCurrentMember = $groupId -in $UserGroupIds
+            $evaluateSuccess = $true
+            $usedMembershipListFallback = $true
         }
 
         # Estimate post-change membership using simple rule pattern extraction.
@@ -82,24 +82,26 @@ function Invoke-DynamicGroupsUserImpact {
         }
 
         $impactDirection = if (-not $isCurrentMember -and $estimatedPostChangeMember) {
-            'WouldJoin'
+            'GainsAccess'
         }
         elseif ($isCurrentMember -and -not $estimatedPostChangeMember) {
-            'WouldLeave'
+            'LosesAccess'
         }
         elseif ($isCurrentMember -and $estimatedPostChangeMember) {
-            'NoChange'
+            'NoMaterialChange'
         }
         else {
-            'RequiresManualReview'
+            'ManualReview'
         }
 
         # Only report groups where a meaningful impact is expected.
-        if ($impactDirection -ne 'NoChange') {
+        if ($impactDirection -ne 'NoMaterialChange') {
             $dynamicRuleMatches += [pscustomobject]@{
                 Group           = $group
                 ImpactDirection = $impactDirection
                 IsCurrentMember = $isCurrentMember
+                IsPostChangeMember = $estimatedPostChangeMember
+                UsedMembershipListFallback = $usedMembershipListFallback
             }
         }
     }
@@ -111,7 +113,12 @@ function Invoke-DynamicGroupsUserImpact {
                     GroupId = "$(Get-ObjectValue -InputObject $_.Group -PropertyName 'Id')"
                     GroupName = "$(Get-ObjectValue -InputObject $_.Group -PropertyName 'DisplayName')"
                     ImpactDirection = "$($_.ImpactDirection)"
+                    CurrentState = if ([bool]$_.IsCurrentMember) { 'Applies' } else { 'DoesNotApply' }
+                    PostChangeState = if ([bool]$_.IsPostChangeMember) { 'Applies' } else { 'DoesNotApply' }
+                    Confidence = if ($_.ImpactDirection -eq 'ManualReview') { 'Low' } else { 'Medium' }
+                    EvidenceSource = if ([bool]$_.UsedMembershipListFallback) { 'DynamicGroupMembershipList' } else { 'DynamicGroupMembershipRule' }
                     IsCurrentMember = [bool]$_.IsCurrentMember
+                    IsPostChangeMember = [bool]$_.IsPostChangeMember
                 }
             } |
             ForEach-Object {

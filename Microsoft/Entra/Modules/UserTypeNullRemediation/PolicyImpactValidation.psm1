@@ -332,6 +332,7 @@ function Get-UserPolicyImpact {
     $groupData       = Invoke-GroupAndAppAssignmentsUserImpact   -User $User -UserAreaStatus $userAreaStatus
     $entitlementData = Invoke-EntitlementManagementUserImpact    -User $User -PolicyContext $PolicyContext -UserAreaStatus $userAreaStatus
     $teamsData       = Invoke-TeamsExchangeHeuristicsUserImpact  -User $User -UserAreaStatus $userAreaStatus
+    $licensingData   = Invoke-LicensingHeuristicsUserImpact      -User $User -ProposedUserType $ProposedUserType -UserAreaStatus $userAreaStatus
 
     $memberGroupIds  = @(Get-UniqueStringArray -InputArray @($groupData.GroupMemberships | ForEach-Object { if ($_.Id) { "$($_.Id)" } }))
     if ($null -eq $memberGroupIds) { $memberGroupIds = @() }
@@ -350,7 +351,7 @@ function Get-UserPolicyImpact {
     if ($roleData.MatchCount -gt 0 -or $caData.MatchCount -gt 0) {
         $riskLevel = 'High'
     }
-    elseif ($entitlementData.AssignmentCount -gt 0 -or $groupData.AppRoleCount -gt 0) {
+    elseif ($entitlementData.AssignmentCount -gt 0 -or $groupData.AppRoleCount -gt 0 -or $licensingData.ImpactCount -gt 0) {
         $riskLevel = 'Medium'
     }
     elseif ($dynamicData.RuleMatchCount -gt 0 -or $groupData.GroupMembershipCount -gt 0) {
@@ -369,13 +370,24 @@ function Get-UserPolicyImpact {
     $coverageFailureText = if ($coverageFailureAreas.Count -gt 0) { $coverageFailureAreas -join ',' } else { 'None' }
 
     $conditionalAccessPolicyNames = Join-UniqueDetailText -Values @($caData.MatchDetails | ForEach-Object { $_.DisplayName })
+    $conditionalAccessDirections = Join-UniqueDetailText -Values @($caData.MatchDetails | ForEach-Object { $_.ImpactDirection })
+    $conditionalAccessPolicyTransitions = Join-UniqueDetailText -Values @($caData.MatchDetails | ForEach-Object {
+        if ([string]::IsNullOrWhiteSpace($_.ImpactDirection)) {
+            $_.DisplayName
+        }
+        else {
+            "$($_.DisplayName) [$($_.ImpactDirection)]"
+        }
+    })
     $dynamicGroupNames = Join-UniqueDetailText -Values @($dynamicData.RuleDetails | ForEach-Object {
         if ([string]::IsNullOrWhiteSpace($_.ImpactDirection)) { $_.GroupName } else { "$($_.GroupName) [$($_.ImpactDirection)]" }
     })
+    $dynamicGroupDirections = Join-UniqueDetailText -Values @($dynamicData.RuleDetails | ForEach-Object { $_.ImpactDirection })
     $groupMembershipNames = Join-UniqueDetailText -Values @($groupData.GroupMembershipDetails | ForEach-Object { $_.GroupName })
     $appRoleAssignmentNames = Join-UniqueDetailText -Values @($groupData.AppRoleDetails | ForEach-Object { $_.ResourceDisplayName })
     $directoryRoleNames = Join-UniqueDetailText -Values @($roleData.MatchDetails | ForEach-Object { $_.RoleName })
     $entitlementPackageNames = Join-UniqueDetailText -Values @($entitlementData.AssignmentDetails | ForEach-Object { $_.AccessPackageName })
+    $licensingImpactDirections = Join-UniqueDetailText -Values @($licensingData.ImpactDetails | ForEach-Object { $_.ImpactDirection })
 
     $conditionalAccessPolicyDetailsJson = Convert-PolicyImpactDetailToJson -Details @($caData.MatchDetails)
     $dynamicGroupImpactDetailsJson = Convert-PolicyImpactDetailToJson -Details @($dynamicData.RuleDetails)
@@ -383,8 +395,9 @@ function Get-UserPolicyImpact {
     $appRoleAssignmentDetailsJson = Convert-PolicyImpactDetailToJson -Details @($groupData.AppRoleDetails)
     $directoryRoleDetailsJson = Convert-PolicyImpactDetailToJson -Details @($roleData.MatchDetails)
     $entitlementPackageDetailsJson = Convert-PolicyImpactDetailToJson -Details @($entitlementData.AssignmentDetails)
+    $licensingImpactDetailsJson = Convert-PolicyImpactDetailToJson -Details @($licensingData.ImpactDetails)
 
-    $summary = "CA=$($caData.MatchCount); DynamicRules=$($dynamicData.RuleMatchCount); GroupMemberships=$($groupData.GroupMembershipCount); AppRoles=$($groupData.AppRoleCount); Entitlements=$($entitlementData.AssignmentCount); DirectoryRoles=$($roleData.MatchCount); Teams=$($teamsData.TeamsCount); Mailbox=$($teamsData.HasMailbox); Risk=$riskLevel; Coverage=$coverageLevel; CoverageFailures=$coverageFailureText"
+    $summary = "CA=$($caData.MatchCount); DynamicRules=$($dynamicData.RuleMatchCount); GroupMemberships=$($groupData.GroupMembershipCount); AppRoles=$($groupData.AppRoleCount); Entitlements=$($entitlementData.AssignmentCount); LicensingImpacts=$($licensingData.ImpactCount); DirectoryRoles=$($roleData.MatchCount); Teams=$($teamsData.TeamsCount); Mailbox=$($teamsData.HasMailbox); Risk=$riskLevel; BlockingFlags=$($blockingFlags -join '; '); Coverage=$coverageLevel; CoverageFailures=$coverageFailureText"
 
     Write-PolicyImpactLog -Message "Policy impact evaluated for $($User.UserPrincipalName) ($($User.Id)): $summary"
 
@@ -393,9 +406,12 @@ function Get-UserPolicyImpact {
         RiskLevel                    = $riskLevel
         ConditionalAccessCount       = $caData.MatchCount
         ConditionalAccessPolicyNames = $conditionalAccessPolicyNames
+        ConditionalAccessDirections  = $conditionalAccessDirections
+        ConditionalAccessPolicyTransitions = $conditionalAccessPolicyTransitions
         ConditionalAccessPolicyDetailsJson = $conditionalAccessPolicyDetailsJson
         DynamicGroupRuleCount        = $dynamicData.RuleMatchCount
         DynamicGroupNames            = $dynamicGroupNames
+        DynamicGroupImpactDirections = $dynamicGroupDirections
         DynamicGroupImpactDetailsJson = $dynamicGroupImpactDetailsJson
         GroupMembershipCount         = $groupData.GroupMembershipCount
         GroupMembershipNames         = $groupMembershipNames
@@ -409,6 +425,9 @@ function Get-UserPolicyImpact {
         EntitlementAssignmentCount   = $entitlementData.AssignmentCount
         EntitlementPackageNames      = $entitlementPackageNames
         EntitlementPackageDetailsJson = $entitlementPackageDetailsJson
+        LicensingImpactCount         = $licensingData.ImpactCount
+        LicensingImpactDirections    = $licensingImpactDirections
+        LicensingImpactDetailsJson   = $licensingImpactDetailsJson
         TeamsCount                   = $teamsData.TeamsCount
         HasMailbox                   = $teamsData.HasMailbox
         BlockingFlags                = ($blockingFlags -join '; ')

@@ -44,6 +44,10 @@ Options:
         Reuses cached Graph query variables from the current PowerShell session when valid.
         Cached variables checked: `$users and `$verifiedDomains.
         Falls back to live Graph queries when cached values are missing or invalid.
+        In non-preview mode, when -TopUsers is also specified, successfully updated users are
+        removed from the cached users list at the end of each run. This enables incremental
+        same-session batching: each subsequent -UseCachedGraphResults -TopUsers run targets
+        only users not yet processed. Preview runs (-WhatIf) never modify the cache.
 
     -EnableGuestUpdates
         Safety gate for real guest writes. Required for non-preview Guest/Both runs.
@@ -59,6 +63,8 @@ Options:
         Limits classification, policy evaluation, and update/preview processing to the first N users
         from the set of accounts where userType is null.
         Default: 0 (process all matching users).
+        In non-preview mode, successfully updated users are pruned from the in-session cache after
+        each run. Use -UseCachedGraphResults on subsequent runs to process remaining users.
 
     -IncludePolicyImpactNamesInLog
         Includes per-user policy impact name details in log lines for candidate processing.
@@ -76,55 +82,66 @@ Options:
         Show this help text.
 
 Notes:
-    - Skipped users are exported only when one or more skipped candidates exist:
-        .\Reports\UserTypeNullRemediation\Reports_Skipped_Users\SkippedUsers-<timestamp>.csv
-    - Preview exports (WhatIf) are written only when matching candidates exist:
-        .\Reports\UserTypeNullRemediation\Reports_Would_Update_Members\WouldUpdateMembers-<timestamp>.csv
-        .\Reports\UserTypeNullRemediation\Reports_Would_Update_Guests\WouldUpdateGuests-<timestamp>.csv
-    - Non-preview update outcome exports are written only when matching records exist:
-        .\Reports\UserTypeNullRemediation\Reports_Updated_Users\UpdatedUsers-<timestamp>.csv
-        .\Reports\UserTypeNullRemediation\Reports_Failed_Updates\FailedUpdates-<timestamp>.csv
-    - Preflight artifacts are written to:
-        .\Reports\UserTypeNullRemediation\Reports_Preflight_Preview\Preflight.preview-<timestamp>.json (preview / -WhatIf)
-        .\Reports\UserTypeNullRemediation\Reports_Preflight\Preflight-<timestamp>.json (non-preview)
-    - Log entries are written to .\Logs\UserUpdate.preview.log for preview (-WhatIf) runs
-      and .\Logs\UserUpdate.log for non-preview runs.
+        - Skipped users are exported only when one or more skipped candidates exist:
+                .\Reports\UserTypeNullRemediation\Reports_Skipped_Users\SkippedUsers-<timestamp>.csv
+        - Preview exports (WhatIf) are written only when matching candidates exist:
+                .\Reports\UserTypeNullRemediation\Reports_Would_Update_Members\WouldUpdateMembers-<timestamp>.csv
+                .\Reports\UserTypeNullRemediation\Reports_Would_Update_Guests\WouldUpdateGuests-<timestamp>.csv
+        - Non-preview update outcome exports are written only when matching records exist:
+                .\Reports\UserTypeNullRemediation\Reports_Updated_Users\UpdatedUsers-<timestamp>.csv
+                .\Reports\UserTypeNullRemediation\Reports_Failed_Updates\FailedUpdates-<timestamp>.csv
+        - Preflight artifacts are written to:
+                .\Reports\UserTypeNullRemediation\Reports_Preflight_Preview\Preflight.preview-<timestamp>.json (preview / -WhatIf)
+                .\Reports\UserTypeNullRemediation\Reports_Preflight\Preflight-<timestamp>.json (non-preview)
+        - Log entries are written to .\Logs\UserUpdate.preview.log for preview (-WhatIf) runs
+            and .\Logs\UserUpdate.log for non-preview runs.
         - Report/export/preflight paths are validated before Graph operations begin.
             Invalid or empty path values stop execution early with a clear error.
-    - Cached Graph data reuse is in-memory only and applies to the current PowerShell session.
-      If cached values are not present or do not match expected structure, live Graph queries are used.
-    - Guest writes can have broader policy impact. Use -WhatIf first.
-    - -TopUsers limits processing to the first N users with missing userType after the
-      null-userType filter is applied.
-    - Delegated read scopes for policy checks:
-        Policy.Read.All, Directory.Read.All, EntitlementManagement.Read.All,
-        RoleManagement.Read.Directory.
-    - Policy impact checks are executed for these areas (all critical unless noted):
-      ConditionalAccess: IncludeUsers/ExcludeUsers, IncludeGroups/ExcludeGroups matching.
-        Disabled policies are not filtered and still count as matches.
-        GuestsOrExternalUsers conditions, named locations, device compliance, and app
-        conditions are not evaluated.
-      DynamicGroups: flags groups whose MembershipRule contains 'user.userType', 'userType',
-        or the proposed type value. For each match, calls POST /groups/{id}/evaluateDynamicMembership
-        to check current membership for the specific user, then combines with -eq/-ne pattern
-        extraction to estimate post-change membership. Reports WouldJoin, WouldLeave,
-        RequiresManualReview, or NoChange (not counted). Complex rule expressions beyond
-        simple -eq/-ne comparisons on user.userType are not evaluated.
-      GroupAndAppAssignments: counts direct group memberships (Get-MgUserMemberOf) and app
-        role assignments (Get-MgUserAppRoleAssignment). Transitive group nesting is not
-        resolved beyond what the API returns directly.
-      EntitlementManagement: counts active access package assignments for the user.
-        In Permissive mode, an unavailable scope records partial coverage but does not block.
-        Access package policy userType rules are not evaluated.
-      DirectoryRoleAssignments: matches direct role assignments by PrincipalId.
-        PIM eligible assignments and group-based role assignments are not included.
-      LicensingHeuristics (advisory): probe only. No per-user counter is computed.
-      TeamsExchangeHeuristics (advisory): disabled. Per-user Teams and mailbox probes are
-        not executed. TeamsCount and HasMailbox will be absent from policy impact output.
-      Non-preview runs stop before writes when critical policy checks are unavailable.
-    - Each run writes a compact preflight summary to log and a detailed preflight JSON artifact.
-    - Exported CSV rows include preflight metadata, computed policy-impact counters,
-      and policy/group/role/entitlement detail-name columns with JSON detail payloads.
+        - Cached Graph data reuse is in-memory only and applies to the current PowerShell session.
+            If cached values are not present or do not match expected structure, live Graph queries are used.
+        - In non-preview mode, when -TopUsers is active, successfully updated users are removed from
+            the in-session $Global:users cache at the end of the run. This supports incremental
+            same-session production batching: dot-source the script (`. .\UserTypeNullRemediation.ps1`)
+            and on each subsequent run add -UseCachedGraphResults -TopUsers to process the next cohort.
+            Users whose update failed remain in cache and are eligible for retry. Preview runs (-WhatIf)
+            never modify the cache regardless of -TopUsers.
+        - Guest writes can have broader policy impact. Use -WhatIf first.
+        - TopUsers limits processing to the first N users with missing userType after the
+            null-userType filter is applied.
+        - Delegated read scopes for policy checks:
+                Policy.Read.All, Directory.Read.All, EntitlementManagement.Read.All,
+                RoleManagement.Read.Directory.
+        - Policy impact checks are executed for these areas (all critical unless noted):
+            ConditionalAccess: IncludeUsers/ExcludeUsers, IncludeGroups/ExcludeGroups matching.
+                Disabled policies are not filtered and still count as matches.
+                GuestsOrExternalUsers conditions, named locations, device compliance, and app
+                conditions are not evaluated.
+            DynamicGroups: flags groups whose MembershipRule contains 'user.userType', 'userType',
+                or the proposed type value. For each match, calls POST /groups/{id}/evaluateDynamicMembership
+                to check current membership for the specific user, then combines with -eq/-ne pattern
+                extraction to estimate post-change membership. Reports GainsAccess, LosesAccess,
+                ManualReview, or NoMaterialChange (not counted). Complex rule expressions beyond
+                simple -eq/-ne comparisons on user.userType are not evaluated.
+            GroupAndAppAssignments: counts direct group memberships (Get-MgUserMemberOf) and app
+                role assignments (Get-MgUserAppRoleAssignment). Transitive group nesting is not
+                resolved beyond what the API returns directly.
+            EntitlementManagement: counts active access package assignments for the user.
+                In Permissive mode, an unavailable scope records partial coverage but does not block.
+                Access package policy userType rules are not evaluated.
+            DirectoryRoleAssignments: matches direct role assignments by PrincipalId.
+                PIM eligible assignments and group-based role assignments are not included.
+            LicensingHeuristics (advisory): computes heuristic directional impact using current
+                assigned license count and proposed userType. Emits LicensingImpactCount,
+                LicensingImpactDirections, and LicensingImpactDetailsJson.
+            TeamsExchangeHeuristics (advisory): disabled. Per-user Teams and mailbox probes are
+                not executed. TeamsCount defaults to 0 and HasMailbox defaults to False.
+            Non-preview runs stop before writes when critical policy checks are unavailable.
+            Impact direction labels in reports/preflight use:
+                StartsApplying, StopsApplying, GainsAccess, LosesAccess, NoMaterialChange, ManualReview.
+        - Each run writes a compact preflight summary to log and a detailed preflight JSON artifact.
+        - Exported CSV rows include preflight metadata, computed policy-impact counters,
+            directional summary columns, and policy/group/role/entitlement detail-name columns with JSON detail payloads.
+        - Legacy policy-impact name columns are retained for compatibility until column relevance is verified.
 "@ | Write-Host
     return
 }
@@ -311,6 +328,14 @@ try {
         IsPreviewMode = $isPreviewMode
         TargetType = $TargetType
         StrictnessMode = $StrictnessMode
+        ImpactDirectionDefinitions = [ordered]@{
+            StartsApplying = 'Policy starts applying after proposed userType change.'
+            StopsApplying = 'Policy stops applying after proposed userType change.'
+            GainsAccess = 'User is expected to gain access or membership after proposed userType change.'
+            LosesAccess = 'User is expected to lose access or membership after proposed userType change.'
+            NoMaterialChange = 'No expected policy impact change between current and proposed userType.'
+            ManualReview = 'Impact could not be reliably projected and requires manual verification.'
+        }
         Summary = $preflightSummary
         Result = $policyPrerequisiteResult
     }
@@ -595,7 +620,7 @@ foreach ($candidate in $updateCandidates) {
 
     $detailNameLogSegment = ''
     if ($IncludePolicyImpactNamesInLog) {
-        $detailNameLogSegment = " | CAPolicies=$($candidate.PolicyImpact.ConditionalAccessPolicyNames) | DynamicGroups=$($candidate.PolicyImpact.DynamicGroupNames) | GroupMemberships=$($candidate.PolicyImpact.GroupMembershipNames) | AppAssignments=$($candidate.PolicyImpact.AppRoleAssignmentNames) | DirectoryRoles=$($candidate.PolicyImpact.DirectoryRoleNames) | Entitlements=$($candidate.PolicyImpact.EntitlementPackageNames)"
+        $detailNameLogSegment = " | CAPolicies=$($candidate.PolicyImpact.ConditionalAccessPolicyNames) | CADirections=$($candidate.PolicyImpact.ConditionalAccessDirections) | CAPolicyTransitions=$($candidate.PolicyImpact.ConditionalAccessPolicyTransitions) | DynamicGroups=$($candidate.PolicyImpact.DynamicGroupNames) | DynamicGroupDirections=$($candidate.PolicyImpact.DynamicGroupImpactDirections) | GroupMemberships=$($candidate.PolicyImpact.GroupMembershipNames) | AppAssignments=$($candidate.PolicyImpact.AppRoleAssignmentNames) | DirectoryRoles=$($candidate.PolicyImpact.DirectoryRoleNames) | Entitlements=$($candidate.PolicyImpact.EntitlementPackageNames) | LicensingDirections=$($candidate.PolicyImpact.LicensingImpactDirections) | BlockingFlags=$($candidate.PolicyImpact.BlockingFlags)"
     }
 
     Write-Log -Message "Processing update candidate ${counter} of ${total}: $($user.UserPrincipalName) | TargetType=$($candidate.ProposedUserType) | Reason: $($candidate.Reason) | PolicyRisk=$($candidate.PolicyImpact.RiskLevel) | PolicySummary=$($candidate.PolicyImpact.Summary)$detailNameLogSegment" -NoConsole
@@ -667,5 +692,17 @@ foreach ($exportPlan in @($postUpdateExportPlans | Where-Object { $_.Enabled }))
                                 -EmptyMessage $exportPlan.EmptyMessage `
                                 -PreflightRunId $preflightRunId `
                                 -PreflightSummary $preflightSummary
+}
+
+# Prune successfully updated users from the in-session cache so that subsequent runs
+# using -UseCachedGraphResults -TopUsers do not reprocess already-updated users.
+# This only applies to non-preview runs where -TopUsers is active and at least one
+# update succeeded. Failed updates and non-candidate users remain in cache for retry.
+if (-not $isPreviewMode -and $TopUsers -gt 0 -and $successfulUpdates.Count -gt 0) {
+    $successfulIds = @($successfulUpdates | ForEach-Object { $_.User.Id })
+    $beforeCount = $Global:users.Count
+    $Global:users = @($Global:users | Where-Object { $_.Id -notin $successfulIds })
+    $afterCount = $Global:users.Count
+    Write-Log("Cache maintenance: removed $($beforeCount - $afterCount) successfully updated users from in-session users cache. Remaining: $afterCount.")
 }
 
