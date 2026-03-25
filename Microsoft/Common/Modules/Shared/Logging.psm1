@@ -23,8 +23,14 @@ function Get-DefaultUserUpdatePreflightArtifactPath {
         [string]$BaseDirectory = '.'
     )
 
-    $fileName = if ($PreviewMode) { "Preflight.preview-$Timestamp.json" } else { "Preflight-$Timestamp.json" }
-    return Join-Path $BaseDirectory (Join-Path 'Reports\UserTypeNullRemediation' $fileName)
+    if ($PreviewMode) {
+        $fileName = "Preflight.preview-$Timestamp.json"
+        return Join-Path $BaseDirectory (Join-Path 'Reports\UserTypeNullRemediation\Reports_Preflight_Preview' $fileName)
+    }
+    else {
+        $fileName = "Preflight-$Timestamp.json"
+        return Join-Path $BaseDirectory (Join-Path 'Reports\UserTypeNullRemediation\Reports_Preflight' $fileName)
+    }
 }
 
 function Set-LogFilePath {

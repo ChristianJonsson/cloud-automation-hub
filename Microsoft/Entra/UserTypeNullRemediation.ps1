@@ -85,8 +85,8 @@ Notes:
         .\Reports\UserTypeNullRemediation\Reports_Updated_Users\UpdatedUsers-<timestamp>.csv
         .\Reports\UserTypeNullRemediation\Reports_Failed_Updates\FailedUpdates-<timestamp>.csv
     - Preflight artifacts are written to:
-        .\Reports\UserTypeNullRemediation\Preflight.preview-<timestamp>.json (preview / -WhatIf)
-        .\Reports\UserTypeNullRemediation\Preflight-<timestamp>.json (non-preview)
+        .\Reports\UserTypeNullRemediation\Reports_Preflight_Preview\Preflight.preview-<timestamp>.json (preview / -WhatIf)
+        .\Reports\UserTypeNullRemediation\Reports_Preflight\Preflight-<timestamp>.json (non-preview)
     - Log entries are written to .\Logs\UserUpdate.preview.log for preview (-WhatIf) runs
       and .\Logs\UserUpdate.log for non-preview runs.
         - Report/export/preflight paths are validated before Graph operations begin.
@@ -170,6 +170,8 @@ $reportFolderMap['MemberPreview'] = Join-Path $reportFolderMap.ReportsRoot 'Repo
 $reportFolderMap['GuestPreview'] = Join-Path $reportFolderMap.ReportsRoot 'Reports_Would_Update_Guests'
 $reportFolderMap['UpdatedUsers'] = Join-Path $reportFolderMap.ReportsRoot 'Reports_Updated_Users'
 $reportFolderMap['FailedUpdates'] = Join-Path $reportFolderMap.ReportsRoot 'Reports_Failed_Updates'
+$reportFolderMap['PreflightPreview'] = Join-Path $reportFolderMap.ReportsRoot 'Reports_Preflight_Preview'
+$reportFolderMap['Preflight'] = Join-Path $reportFolderMap.ReportsRoot 'Reports_Preflight'
 
 $reportsRootFolder = $reportFolderMap.ReportsRoot
 $skippedReviewFolder = $reportFolderMap.SkippedReview
@@ -177,6 +179,8 @@ $memberPreviewFolder = $reportFolderMap.MemberPreview
 $guestPreviewFolder = $reportFolderMap.GuestPreview
 $updatedUsersFolder = $reportFolderMap.UpdatedUsers
 $failedUpdatesFolder = $reportFolderMap.FailedUpdates
+$preflightPreviewFolder = $reportFolderMap.PreflightPreview
+$preflightFolder = $reportFolderMap.Preflight
 
 $exportFileMap = [ordered]@{
     Skipped = "SkippedUsers-$runTimestamp.csv"
@@ -232,6 +236,8 @@ $runPathEntries = @(
     [pscustomobject]@{ Label = 'GuestPreviewFolder'; Path = $guestPreviewFolder }
     [pscustomobject]@{ Label = 'UpdatedUsersFolder'; Path = $updatedUsersFolder }
     [pscustomobject]@{ Label = 'FailedUpdatesFolder'; Path = $failedUpdatesFolder }
+    [pscustomobject]@{ Label = 'PreflightPreviewFolder'; Path = $preflightPreviewFolder }
+    [pscustomobject]@{ Label = 'PreflightFolder'; Path = $preflightFolder }
     [pscustomobject]@{ Label = 'SkippedExportPath'; Path = $skippedExportPath }
     [pscustomobject]@{ Label = 'MemberPreviewExportPath'; Path = $memberPreviewExportPath }
     [pscustomobject]@{ Label = 'GuestPreviewExportPath'; Path = $guestPreviewExportPath }
@@ -248,6 +254,8 @@ $directoryInitializationPlans = @(
     [pscustomobject]@{ Path = $guestPreviewFolder; Condition = $isPreviewMode }
     [pscustomobject]@{ Path = $updatedUsersFolder; Condition = (-not $isPreviewMode) }
     [pscustomobject]@{ Path = $failedUpdatesFolder; Condition = (-not $isPreviewMode) }
+    [pscustomobject]@{ Path = $preflightPreviewFolder; Condition = $isPreviewMode }
+    [pscustomobject]@{ Path = $preflightFolder; Condition = (-not $isPreviewMode) }
 )
 
 foreach ($directoryPlan in $directoryInitializationPlans) {
