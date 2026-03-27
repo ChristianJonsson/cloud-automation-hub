@@ -35,7 +35,6 @@ Policy-impact preflight scopes (required for full policy coverage)
 - `EntitlementManagement.Read.All`
 - `RoleManagement.Read.Directory`
 
-
 ## Policy Impact Evaluation Areas
 
 The script evaluates these policy-impact areas when building preflight and per-user impact results.
@@ -44,7 +43,7 @@ Critical areas (write mode can block when unavailable, depending on `-Strictness
 
 - **ConditionalAccess** — fetches all CA policies via `Get-MgIdentityConditionalAccessPolicy -All` (requires `Policy.Read.All`). For each user, evaluates `Conditions.Users`: included when `IncludeUsers` contains `All` or the user's ID, when any `IncludeGroups` entry matches a group the user belongs to, or when `IncludeGuestsOrExternalUsers` applies to the current/proposed user type. Exclusion uses `ExcludeUsers`, `ExcludeGroups`, and `ExcludeGuestsOrExternalUsers` similarly. Per-policy output includes directional impact and state transitions (`CurrentState`, `PostChangeState`, `ImpactDirection`), with report labels such as `StartsApplying`, `StopsApplying`, and `NoMaterialChange`. Matching policy count is recorded as `ConditionalAccessCount` and elevates `PolicyRiskLevel` to `High`. **Not evaluated:** whether the policy is enabled or disabled (disabled policies still count as matches), named locations, device compliance, sign-in risk, and application-scoped conditions.
 
-- **DynamicGroups** — fetches all dynamic-membership groups via `Get-MgGroup -Filter "groupTypes/any(c:c eq 'DynamicMembership')"` (requires `Directory.Read.All`), retrieving `Id`, `DisplayName`, and `MembershipRule`. For each user, filters groups whose `MembershipRule` references `user.userType` or `userType` (case-insensitive), or contains the proposed UserType value as a literal string. For each matched group, calls `POST /groups/{id}/evaluateDynamicMembership` with the user's ID to determine current membership status, then applies simple pattern extraction (`-eq`/`-ne` comparisons on `user.userType`) to estimate post-change membership. If the evaluate API call fails, current membership is derived from the user's group membership list (`Get-MgUserMemberOf` results) and evaluation continues. Reports `ImpactDirection` per group using report terms: `GainsAccess`, `LosesAccess`, `ManualReview`, or `NoMaterialChange` (not counted). Count of impacted groups is recorded as `DynamicGroupRuleCount` and contributes to `PolicyRiskLevel` `Low`. Evaluation failures are written to the log as warnings. **Not evaluated:** complex rule expressions beyond simple `-eq`/`-ne` comparisons on `user.userType`.
+- **DynamicGroups** — fetches all dynamic-membership groups via `Get-MgGroup -Filter "groupTypes/any(c:c eq 'DynamicMembership')"` (requires `Directory.Read.All`), retrieving `Id`, `DisplayName`, and `MembershipRule`. For each user, filters groups whose `MembershipRule` references `user.userType` or `userType` (case-insensitive), or contains the proposed UserType value as a literal string. For each matched group, calls `POST /groups/{id}/evaluateDynamicMembership` with the user's ID to determine current membership status, then applies simple pattern extraction (`-eq`/`-ne` comparisons on `user.userType`) to estimate post-change membership. If the evaluate API call fails, current membership is derived from the user's group membership list (`Get-MgUserMemberOf` results) and evaluation continues. Reports `ImpactDirection` per group using report terms: `GainsAccess`, `LosesAccess`, `ManualReview`, or `NoMaterialChange` (not counted). Count of impacted groups is recorded as `DynamicGroupRuleCount` and contributes to `PolicyRiskLevel` `Low`. Evaluation failures are logged as `WARNING`; `405 MethodNotAllowed` responses (a permanent API limitation for certain group types) are logged at `INFO` instead and fall back to the group membership list for current membership. **Not evaluated:** complex rule expressions beyond simple `-eq`/`-ne` comparisons on `user.userType`.
 
 - **GroupAndAppAssignments** — per-user: calls `Get-MgUserMemberOf -All` to retrieve all group memberships, and `Get-MgUserAppRoleAssignment -All` to retrieve app role assignments (both require `Directory.Read.All`). Counts are recorded as `GroupMembershipCount` and `AppRoleAssignmentCount`. App role assignments elevate `PolicyRiskLevel` to `Medium`; group memberships elevate to `Low`. Group memberships are also used as input for the ConditionalAccess and DynamicGroups per-user checks. **Not evaluated:** transitive group-of-group nesting beyond what `Get-MgUserMemberOf` returns directly.
 
@@ -54,7 +53,7 @@ Critical areas (write mode can block when unavailable, depending on `-Strictness
 
 Advisory areas
 
-- **LicensingHeuristics** — advisory per-user heuristic: uses assigned license count and current/proposed user type to estimate directional outcomes. Outputs `LicensingImpactCount`, `LicensingImpactDirections`, and `LicensingImpactDetailsJson` with report terms such as `GainsAccess`, `LosesAccess`, or `NoMaterialChange`, plus confidence and evidence source metadata. Requires `Organization.Read.All` for prerequisite probing and contributes to `PolicyRiskLevel` when directional impacts are detected.
+- **LicensingHeuristics** — advisory per-user heuristic: uses assigned license count and current/proposed user type to estimate directional outcomes. Loads all tenant SKUs once at context initialization via `Get-MgSubscribedSku -All` and maps `SkuId → SkuPartNumber` for human-readable names. Outputs `LicensingImpactCount`, `LicensingImpactDirections`, `LicensingImpactNames`, and `LicensingImpactDetailsJson` with report terms such as `GainsAccess`, `LosesAccess`, or `NoMaterialChange`, plus confidence and evidence source metadata. `LicensingImpactNames` lists the specific SKU names affected; when a user has no current licenses and is proposed as Member (`GainsAccess`), it shows `[NeedsLicenseAssignment]` to indicate that a license must be manually assigned after the change. `LicensingAssignedNames` always lists the user's currently held licenses regardless of impact direction. Requires `Organization.Read.All` for prerequisite probing and contributes to `PolicyRiskLevel` when directional impacts are detected.
 
 - **TeamsExchangeHeuristics** — **disabled.** The scope matrix entry and prerequisite probe are commented out. Per-user Teams and mailbox probes are not executed; `TeamsCount` and `HasMailbox` are not populated in policy impact output. `Team.ReadBasic.All` and `Mail.ReadBasic.All` are not requested.
 
@@ -159,9 +158,8 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
     `ConditionalAccessPolicyNames`, `ConditionalAccessDirections`, `ConditionalAccessPolicyTransitions`, `ConditionalAccessPolicyDetailsJson`, `DynamicGroupNames`, `DynamicGroupImpactDirections`, `DynamicGroupImpactDetailsJson`,
     `GroupMembershipNames`, `GroupMembershipDetailsJson`, `AppRoleAssignmentNames`, `AppRoleAssignmentDetailsJson`,
     `DirectoryRoleNames`, `DirectoryRoleDetailsJson`, `EntitlementPackageNames`, `EntitlementPackageDetailsJson`,
-    `LicensingImpactDirections`, `LicensingImpactDetailsJson`
+    `LicensingImpactDirections`, `LicensingImpactNames`, `LicensingAssignedNames`, `LicensingImpactDetailsJson`
   - `BlockingFlags` and computed `PolicyImpactNotes`
-  - Legacy policy-impact name columns are retained for compatibility until relevance/removal is verified.
 
 - Exported CSV column groups:
   - Run metadata: `TimestampUtc`, `PreflightRunId`, `PreflightSummary`
@@ -169,7 +167,7 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
   - Account state: `AccountEnabled`, `CreatedDateTime`, `CreationType`, `ExternalUserState`
   - Sync and identity signals: `OnPremisesSyncEnabled`, `OnPremisesImmutableId`, `OnPremisesSecurityIdentifier`, `AssignedLicensesCount`, `IdentitiesSummary`
   - Classification: `CurrentUserType`, `ProposedUserType`, `Reason`
-  - Policy impact: `PolicyCoverageLevel`, `PolicyRiskLevel`, `ConditionalAccessCount`, `ConditionalAccessPolicyNames`, `ConditionalAccessDirections`, `ConditionalAccessPolicyTransitions`, `ConditionalAccessPolicyDetailsJson`, `DynamicGroupRuleCount`, `DynamicGroupNames`, `DynamicGroupImpactDirections`, `DynamicGroupImpactDetailsJson`, `GroupMembershipCount`, `GroupMembershipNames`, `GroupMembershipDetailsJson`, `AppRoleAssignmentCount`, `AppRoleAssignmentNames`, `AppRoleAssignmentDetailsJson`, `DirectoryRoleAssignmentCount`, `DirectoryRoleNames`, `DirectoryRoleDetailsJson`, `EntitlementAssignmentCount`, `EntitlementPackageNames`, `EntitlementPackageDetailsJson`, `LicensingImpactCount`, `LicensingImpactDirections`, `LicensingImpactDetailsJson`, `TeamsCount`, `HasMailbox`, `BlockingFlags`, `PolicyImpactNotes`
+  - Policy impact: `PolicyCoverageLevel`, `PolicyRiskLevel`, `ConditionalAccessCount`, `ConditionalAccessPolicyNames`, `ConditionalAccessDirections`, `ConditionalAccessPolicyTransitions`, `ConditionalAccessPolicyDetailsJson`, `DynamicGroupRuleCount`, `DynamicGroupNames`, `DynamicGroupImpactDirections`, `DynamicGroupImpactDetailsJson`, `GroupMembershipCount`, `GroupMembershipNames`, `GroupMembershipDetailsJson`, `AppRoleAssignmentCount`, `AppRoleAssignmentNames`, `AppRoleAssignmentDetailsJson`, `DirectoryRoleAssignmentCount`, `DirectoryRoleNames`, `DirectoryRoleDetailsJson`, `EntitlementAssignmentCount`, `EntitlementPackageNames`, `EntitlementPackageDetailsJson`, `LicensingImpactCount`, `LicensingImpactDirections`, `LicensingImpactNames`, `LicensingAssignedNames`, `LicensingImpactDetailsJson`, `TeamsCount`, `HasMailbox`, `BlockingFlags`, `PolicyImpactNotes`
   - Diagnostic extension attributes: `ExtensionAttribute1` through `ExtensionAttribute15`
 
 ## Usage Examples
@@ -255,7 +253,7 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 3. `-EnableGuestUpdates` is intentionally required for non-preview guest writes.
 4. In non-preview mode, write behavior is controlled by `-StrictnessMode` and preflight outcomes.
 5. Report/export/preflight paths are validated early; invalid path values fail fast before Graph processing.
-5. If entitlement preflight checks are unavailable due to missing authorization, preview still works, but write behavior depends on strictness and criticality.
+6. If entitlement preflight checks are unavailable due to missing authorization, preview still works, but write behavior depends on strictness and criticality.
 
 ## Related Layout Documentation
 

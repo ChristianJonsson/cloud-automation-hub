@@ -131,8 +131,12 @@ Notes:
             DirectoryRoleAssignments: matches direct role assignments by PrincipalId.
                 PIM eligible assignments and group-based role assignments are not included.
             LicensingHeuristics (advisory): computes heuristic directional impact using current
-                assigned license count and proposed userType. Emits LicensingImpactCount,
-                LicensingImpactDirections, and LicensingImpactDetailsJson.
+                assigned license count and proposed userType. SKU names are resolved from
+                Get-MgSubscribedSku loaded at context init. Emits LicensingImpactCount,
+                LicensingImpactDirections, LicensingImpactNames (SKU names of impacted licenses;
+                shows [NeedsLicenseAssignment] when a user has no current license and gains Member),
+                LicensingAssignedNames (currently held licenses, always populated), and
+                LicensingImpactDetailsJson.
             TeamsExchangeHeuristics (advisory): disabled. Per-user Teams and mailbox probes are
                 not executed. TeamsCount defaults to 0 and HasMailbox defaults to False.
             Non-preview runs stop before writes when critical policy checks are unavailable.
