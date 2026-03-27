@@ -38,6 +38,26 @@ function Invoke-LicensingHeuristicsUserImpact {
         $direction = 'GainsAccess'
     }
 
+    # Build assignment path map (Direct vs. GroupBased) from LicenseAssignmentStates.
+    # GroupBased licenses are controlled by group membership, not direct assignment, so a userType
+    # change alone will not remove them unless the group membership also changes.
+    $assignmentPathBySkuId = @{}
+    foreach ($state in @($User.LicenseAssignmentStates)) {
+        $stateSkuId = "$(Get-ObjectValue -InputObject $state -PropertyName 'SkuId')"
+        if ([string]::IsNullOrWhiteSpace($stateSkuId)) { continue }
+        $assignedByGroup = Get-ObjectValue -InputObject $state -PropertyName 'AssignedByGroup'
+        $path = if ($null -eq $assignedByGroup -or [string]::IsNullOrWhiteSpace("$assignedByGroup")) { 'Direct' } else { 'GroupBased' }
+        if ($assignmentPathBySkuId.ContainsKey($stateSkuId)) {
+            # Same SKU can be assigned both directly and via group — mark as Mixed.
+            if ($assignmentPathBySkuId[$stateSkuId] -ne $path) {
+                $assignmentPathBySkuId[$stateSkuId] = 'Mixed'
+            }
+        }
+        else {
+            $assignmentPathBySkuId[$stateSkuId] = $path
+        }
+    }
+
     # Build SKU name lookup from context so detail records carry human-readable names.
     $skuNameMap = @{}
     if ($null -ne $PolicyContext -and $null -ne $PolicyContext.SubscribedSkuMap) {
@@ -57,9 +77,11 @@ function Invoke-LicensingHeuristicsUserImpact {
                 }
                 $skuName = if ($skuNameMap.ContainsKey($skuId)) { $skuNameMap[$skuId] } else { "[Sku:$skuId]" }
 
+                $assignmentPath = if ($assignmentPathBySkuId.ContainsKey($skuId)) { $assignmentPathBySkuId[$skuId] } else { 'Unknown' }
                 $details += [pscustomobject]@{
                     SkuId            = $skuId
                     SkuName          = $skuName
+                    AssignmentPath   = $assignmentPath
                     CurrentState     = 'Licensed'
                     PostChangeState  = 'PotentiallyNotLicensed'
                     ImpactDirection  = $direction
@@ -76,6 +98,7 @@ function Invoke-LicensingHeuristicsUserImpact {
             $details += [pscustomobject]@{
                 SkuId            = ''
                 SkuName          = '[NeedsLicenseAssignment]'
+                AssignmentPath   = 'NotApplicable'
                 CurrentState     = 'NotLicensed'
                 PostChangeState  = 'PotentiallyLicensed'
                 ImpactDirection  = $direction

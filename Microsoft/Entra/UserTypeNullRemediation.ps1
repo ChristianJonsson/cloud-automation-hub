@@ -370,7 +370,7 @@ Write-Log('Initialized policy impact context from preflight results.')
 $properties = @(
     'id','userType','displayName','userPrincipalName','mail','createdDateTime',
     'jobTitle','companyName','department','officeLocation',
-    'creationType','accountEnabled','assignedLicenses','identities',
+    'creationType','accountEnabled','assignedLicenses','licenseAssignmentStates','identities',
     'externalUserState',
     'ServiceProvisioningErrors','onPremisesSyncEnabled',
     'onPremisesDistinguishedName','onPremisesDomainName',
@@ -383,7 +383,7 @@ $properties = @(
 $requiredCachedUserProperties = @(
     'Id','UserType','DisplayName','UserPrincipalName',
     'JobTitle','CompanyName','Department','OfficeLocation',
-    'CreationType','ExternalUserState','AccountEnabled','AssignedLicenses','Identities',
+    'CreationType','ExternalUserState','AccountEnabled','AssignedLicenses','LicenseAssignmentStates','Identities',
     'OnPremisesSyncEnabled','OnPremisesDistinguishedName',
     'OnPremisesSecurityIdentifier','OnPremisesImmutableId',
     'OnPremisesExtensionAttributes'
@@ -509,18 +509,26 @@ $classifiedUsers = foreach ($user in $usersWithNoUserType) {
     else {
         Write-Log -Message "Classification result ${classificationCounter} of ${classificationTotal}: $($user.UserPrincipalName) skipped | Reason: $reason" -NoConsole
         [pscustomobject]@{
-            CoverageLevel = 'NotEvaluated'
-            RiskLevel = 'None'
-            ConditionalAccessCount = 0
-            DynamicGroupRuleCount = 0
-            GroupMembershipCount = 0
-            AppRoleAssignmentCount = 0
+            CoverageLevel                = 'NotEvaluated'
+            RiskLevel                    = 'None'
+            ConditionalAccessCount       = 0
+            DynamicGroupRuleCount        = 0
+            GroupMembershipCount         = 0
+            AppRoleAssignmentCount       = 0
             DirectoryRoleAssignmentCount = 0
-            EntitlementAssignmentCount = 0
-            TeamsCount = 0
-            HasMailbox = $false
-            BlockingFlags = ''
-            Summary = 'No proposed userType; policy impact not evaluated.'
+            EligibleDirectoryRoleCount   = 0
+            EligibleDirectoryRoleNames   = ''
+            EligibleDirectoryRoleDetailsJson = '[]'
+            EntitlementAssignmentCount   = 0
+            LicensingImpactCount         = 0
+            LicensingImpactDirections    = ''
+            LicensingImpactNames         = ''
+            LicensingAssignedNames       = ''
+            LicensingImpactDetailsJson   = '[]'
+            TeamsCount                   = 0
+            HasMailbox                   = $false
+            BlockingFlags                = ''
+            Summary                      = 'No proposed userType; policy impact not evaluated.'
         }
     }
 

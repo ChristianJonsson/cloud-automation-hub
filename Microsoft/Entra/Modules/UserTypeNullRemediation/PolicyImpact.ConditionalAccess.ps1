@@ -96,12 +96,28 @@ function Invoke-ConditionalAccessUserImpact {
                 $policyName = "[UnnamedPolicy:$policyId]"
             }
 
+            $policyState = "$(Get-ObjectValue -InputObject $policy -PropertyName 'State')"
+
+            # Extract GuestOrExternalUserTypes from the include condition object so reviewers can see
+            # which specific guest subtypes (e.g. b2bCollaborationGuest, b2bCollaborationMember) this
+            # policy targets. Match logic uses the binary presence check above; this is metadata only.
+            $includeGuestExternalRaw = Get-ObjectValue -InputObject $usersCondition -PropertyName 'IncludeGuestsOrExternalUsers'
+            $includeGuestOrExtUserTypes = ''
+            if ($null -ne $includeGuestExternalRaw) {
+                $rawTypes = Get-ObjectValue -InputObject $includeGuestExternalRaw -PropertyName 'GuestOrExternalUserTypes'
+                if ($null -ne $rawTypes) {
+                    $includeGuestOrExtUserTypes = "$rawTypes"
+                }
+            }
+
             $matchDetails += [pscustomobject]@{
                 Id = $policyId
                 DisplayName = $policyName
                 CurrentState = Convert-StateToPolicyStateLabel -State $currentlyApplies
                 PostChangeState = Convert-StateToPolicyStateLabel -State $postChangeApplies
                 ImpactDirection = Convert-ImpactDirectionToReportLabel -Direction $direction
+                PolicyState = $policyState
+                IncludeGuestOrExternalUserTypes = $includeGuestOrExtUserTypes
                 Confidence = 'High'
                 EvidenceSource = 'ConditionalAccessPolicy.Users'
             }

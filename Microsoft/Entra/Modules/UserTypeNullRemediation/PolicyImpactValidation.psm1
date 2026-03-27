@@ -202,6 +202,7 @@ function Initialize-PolicyImpactContext {
     $dynamicGroups = @()
     $directoryRoleAssignments = @()
     $directoryRoleDefinitionNameMap = @{}
+    $eligibleRoleSchedules = @()
     $accessPackageNameMap = @{}
 
     if ($areaStatus['ConditionalAccess'] -eq 'Available') {
@@ -249,6 +250,16 @@ function Initialize-PolicyImpactContext {
             $areaStatus['DirectoryRoleAssignments'] = 'Unavailable'
             Write-PolicyImpactLog -Level 'WARNING' -Message "Failed to load directory role assignments into policy context: $($_.Exception.Message)"
         }
+
+        # PIM eligible role schedules — separate try so a failure here does not mark the whole area Unavailable.
+        if (Get-Command -Name Get-MgRoleManagementDirectoryRoleEligibilitySchedule -ErrorAction SilentlyContinue) {
+            try {
+                $eligibleRoleSchedules = @(Get-MgRoleManagementDirectoryRoleEligibilitySchedule -All -ErrorAction Stop)
+            }
+            catch {
+                Write-PolicyImpactLog -Level 'WARNING' -Message "Failed to load PIM eligible role schedules into policy context: $($_.Exception.Message)"
+            }
+        }
     }
 
     if ($areaStatus['EntitlementManagement'] -eq 'Available') {
@@ -294,7 +305,7 @@ function Initialize-PolicyImpactContext {
     }
 
     $areaStatusStr = @($areaStatus.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '
-    Write-PolicyImpactLog -Message "Initialized policy context: CAPolicies=$($conditionalAccessPolicies.Count); DynamicGroups=$($dynamicGroups.Count); DirectoryRoleAssignments=$($directoryRoleAssignments.Count); RoleDefinitions=$($directoryRoleDefinitionNameMap.Count); AccessPackages=$($accessPackageNameMap.Count); SubscribedSkus=$($subscribedSkuMap.Count); AreaStatus=$areaStatusStr"
+    Write-PolicyImpactLog -Message "Initialized policy context: CAPolicies=$($conditionalAccessPolicies.Count); DynamicGroups=$($dynamicGroups.Count); DirectoryRoleAssignments=$($directoryRoleAssignments.Count); EligibleRoleSchedules=$($eligibleRoleSchedules.Count); RoleDefinitions=$($directoryRoleDefinitionNameMap.Count); AccessPackages=$($accessPackageNameMap.Count); SubscribedSkus=$($subscribedSkuMap.Count); AreaStatus=$areaStatusStr"
 
     return [pscustomobject]@{
         PrerequisiteResult = $PrerequisiteResult
@@ -302,6 +313,7 @@ function Initialize-PolicyImpactContext {
         ConditionalAccessPolicies = $conditionalAccessPolicies
         DynamicGroups = $dynamicGroups
         DirectoryRoleAssignments = $directoryRoleAssignments
+        EligibleRoleSchedules = $eligibleRoleSchedules
         DirectoryRoleDefinitionNameMap = $directoryRoleDefinitionNameMap
         AccessPackageNameMap = $accessPackageNameMap
         SubscribedSkuMap = $subscribedSkuMap
@@ -373,7 +385,7 @@ function Get-UserPolicyImpact {
     }
 
     $riskLevel = 'None'
-    if ($roleData.MatchCount -gt 0 -or $caData.MatchCount -gt 0) {
+    if ($roleData.MatchCount -gt 0 -or $roleData.EligibleCount -gt 0 -or $caData.MatchCount -gt 0) {
         $riskLevel = 'High'
     }
     elseif ($entitlementData.AssignmentCount -gt 0 -or $groupData.AppRoleCount -gt 0 -or $licensingData.ImpactCount -gt 0) {
@@ -389,6 +401,7 @@ function Get-UserPolicyImpact {
     $blockingFlags = @()
     if ($caData.MatchCount -gt 0) { $blockingFlags += 'ConditionalAccessMatch' }
     if ($roleData.MatchCount -gt 0) { $blockingFlags += 'DirectoryRoleAssignment' }
+    if ($roleData.EligibleCount -gt 0) { $blockingFlags += 'PIMEligibleRole' }
     if ($entitlementData.AssignmentCount -gt 0) { $blockingFlags += 'EntitlementAssignment' }
 
     $coverageFailureAreas = @($coverageFailures | ForEach-Object { $_.Key } | Sort-Object -Unique)
@@ -411,6 +424,7 @@ function Get-UserPolicyImpact {
     $groupMembershipNames = Join-UniqueDetailText -Values @($groupData.GroupMembershipDetails | ForEach-Object { $_.GroupName })
     $appRoleAssignmentNames = Join-UniqueDetailText -Values @($groupData.AppRoleDetails | ForEach-Object { $_.ResourceDisplayName })
     $directoryRoleNames = Join-UniqueDetailText -Values @($roleData.MatchDetails | ForEach-Object { $_.RoleName })
+    $eligibleDirectoryRoleNames = Join-UniqueDetailText -Values @($roleData.EligibleMatchDetails | ForEach-Object { $_.RoleName })
     $entitlementPackageNames = Join-UniqueDetailText -Values @($entitlementData.AssignmentDetails | ForEach-Object { $_.AccessPackageName })
     $licensingImpactDirections = Join-UniqueDetailText -Values @($licensingData.ImpactDetails | ForEach-Object { $_.ImpactDirection })
     $licensingImpactNames = Join-UniqueDetailText -Values @($licensingData.ImpactDetails | ForEach-Object { $_.SkuName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -421,10 +435,11 @@ function Get-UserPolicyImpact {
     $groupMembershipDetailsJson = Convert-PolicyImpactDetailToJson -Details @($groupData.GroupMembershipDetails)
     $appRoleAssignmentDetailsJson = Convert-PolicyImpactDetailToJson -Details @($groupData.AppRoleDetails)
     $directoryRoleDetailsJson = Convert-PolicyImpactDetailToJson -Details @($roleData.MatchDetails)
+    $eligibleDirectoryRoleDetailsJson = Convert-PolicyImpactDetailToJson -Details @($roleData.EligibleMatchDetails)
     $entitlementPackageDetailsJson = Convert-PolicyImpactDetailToJson -Details @($entitlementData.AssignmentDetails)
     $licensingImpactDetailsJson = Convert-PolicyImpactDetailToJson -Details @($licensingData.ImpactDetails)
 
-    $summary = "CA=$($caData.MatchCount); DynamicRules=$($dynamicData.RuleMatchCount); GroupMemberships=$($groupData.GroupMembershipCount); AppRoles=$($groupData.AppRoleCount); Entitlements=$($entitlementData.AssignmentCount); LicensingImpacts=$($licensingData.ImpactCount); DirectoryRoles=$($roleData.MatchCount); Teams=$($teamsData.TeamsCount); Mailbox=$($teamsData.HasMailbox); Risk=$riskLevel; BlockingFlags=$($blockingFlags -join '; '); Coverage=$coverageLevel; CoverageFailures=$coverageFailureText"
+    $summary = "CA=$($caData.MatchCount); DynamicRules=$($dynamicData.RuleMatchCount); GroupMemberships=$($groupData.GroupMembershipCount); AppRoles=$($groupData.AppRoleCount); Entitlements=$($entitlementData.AssignmentCount); LicensingImpacts=$($licensingData.ImpactCount); DirectoryRoles=$($roleData.MatchCount); EligibleRoles=$($roleData.EligibleCount); Teams=$($teamsData.TeamsCount); Mailbox=$($teamsData.HasMailbox); Risk=$riskLevel; BlockingFlags=$($blockingFlags -join '; '); Coverage=$coverageLevel; CoverageFailures=$coverageFailureText"
 
     Write-PolicyImpactLog -Message "Policy impact evaluated for $($User.UserPrincipalName) ($($User.Id)): $summary"
 
@@ -446,10 +461,13 @@ function Get-UserPolicyImpact {
         AppRoleAssignmentCount       = $groupData.AppRoleCount
         AppRoleAssignmentNames       = $appRoleAssignmentNames
         AppRoleAssignmentDetailsJson = $appRoleAssignmentDetailsJson
-        DirectoryRoleAssignmentCount = $roleData.MatchCount
-        DirectoryRoleNames           = $directoryRoleNames
-        DirectoryRoleDetailsJson     = $directoryRoleDetailsJson
-        EntitlementAssignmentCount   = $entitlementData.AssignmentCount
+        DirectoryRoleAssignmentCount     = $roleData.MatchCount
+        DirectoryRoleNames               = $directoryRoleNames
+        DirectoryRoleDetailsJson         = $directoryRoleDetailsJson
+        EligibleDirectoryRoleCount       = $roleData.EligibleCount
+        EligibleDirectoryRoleNames       = $eligibleDirectoryRoleNames
+        EligibleDirectoryRoleDetailsJson = $eligibleDirectoryRoleDetailsJson
+        EntitlementAssignmentCount       = $entitlementData.AssignmentCount
         EntitlementPackageNames      = $entitlementPackageNames
         EntitlementPackageDetailsJson = $entitlementPackageDetailsJson
         LicensingImpactCount         = $licensingData.ImpactCount
