@@ -275,8 +275,26 @@ function Initialize-PolicyImpactContext {
         }
     }
 
+    $subscribedSkuMap = @{}
+    if ($areaStatus['LicensingHeuristics'] -eq 'Available') {
+        try {
+            if (Get-Command -Name Get-MgSubscribedSku -ErrorAction SilentlyContinue) {
+                $subscribedSkus = @(Get-MgSubscribedSku -All -ErrorAction Stop)
+                foreach ($sku in $subscribedSkus) {
+                    $skuId = "$(Get-ObjectValue -InputObject $sku -PropertyName 'SkuId')"
+                    if ([string]::IsNullOrWhiteSpace($skuId)) { continue }
+                    $skuPartNumber = "$(Get-ObjectValue -InputObject $sku -PropertyName 'SkuPartNumber')"
+                    $subscribedSkuMap[$skuId] = if ([string]::IsNullOrWhiteSpace($skuPartNumber)) { "[Sku:$skuId]" } else { $skuPartNumber }
+                }
+            }
+        }
+        catch {
+            Write-PolicyImpactLog -Level 'WARNING' -Message "Failed to load subscribed SKU names into policy context: $($_.Exception.Message)"
+        }
+    }
+
     $areaStatusStr = @($areaStatus.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '
-    Write-PolicyImpactLog -Message "Initialized policy context: CAPolicies=$($conditionalAccessPolicies.Count); DynamicGroups=$($dynamicGroups.Count); DirectoryRoleAssignments=$($directoryRoleAssignments.Count); RoleDefinitions=$($directoryRoleDefinitionNameMap.Count); AccessPackages=$($accessPackageNameMap.Count); AreaStatus=$areaStatusStr"
+    Write-PolicyImpactLog -Message "Initialized policy context: CAPolicies=$($conditionalAccessPolicies.Count); DynamicGroups=$($dynamicGroups.Count); DirectoryRoleAssignments=$($directoryRoleAssignments.Count); RoleDefinitions=$($directoryRoleDefinitionNameMap.Count); AccessPackages=$($accessPackageNameMap.Count); SubscribedSkus=$($subscribedSkuMap.Count); AreaStatus=$areaStatusStr"
 
     return [pscustomobject]@{
         PrerequisiteResult = $PrerequisiteResult
@@ -286,6 +304,7 @@ function Initialize-PolicyImpactContext {
         DirectoryRoleAssignments = $directoryRoleAssignments
         DirectoryRoleDefinitionNameMap = $directoryRoleDefinitionNameMap
         AccessPackageNameMap = $accessPackageNameMap
+        SubscribedSkuMap = $subscribedSkuMap
     }
 }
 
@@ -332,7 +351,7 @@ function Get-UserPolicyImpact {
     $groupData       = Invoke-GroupAndAppAssignmentsUserImpact   -User $User -UserAreaStatus $userAreaStatus
     $entitlementData = Invoke-EntitlementManagementUserImpact    -User $User -PolicyContext $PolicyContext -UserAreaStatus $userAreaStatus
     $teamsData       = Invoke-TeamsExchangeHeuristicsUserImpact  -User $User -UserAreaStatus $userAreaStatus
-    $licensingData   = Invoke-LicensingHeuristicsUserImpact      -User $User -ProposedUserType $ProposedUserType -UserAreaStatus $userAreaStatus
+    $licensingData   = Invoke-LicensingHeuristicsUserImpact      -User $User -ProposedUserType $ProposedUserType -UserAreaStatus $userAreaStatus -PolicyContext $PolicyContext
 
     $memberGroupIds  = @(Get-UniqueStringArray -InputArray @($groupData.GroupMemberships | ForEach-Object { if ($_.Id) { "$($_.Id)" } }))
     if ($null -eq $memberGroupIds) { $memberGroupIds = @() }
@@ -388,6 +407,7 @@ function Get-UserPolicyImpact {
     $directoryRoleNames = Join-UniqueDetailText -Values @($roleData.MatchDetails | ForEach-Object { $_.RoleName })
     $entitlementPackageNames = Join-UniqueDetailText -Values @($entitlementData.AssignmentDetails | ForEach-Object { $_.AccessPackageName })
     $licensingImpactDirections = Join-UniqueDetailText -Values @($licensingData.ImpactDetails | ForEach-Object { $_.ImpactDirection })
+    $licensingImpactNames = Join-UniqueDetailText -Values @($licensingData.ImpactDetails | ForEach-Object { $_.SkuName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
     $conditionalAccessPolicyDetailsJson = Convert-PolicyImpactDetailToJson -Details @($caData.MatchDetails)
     $dynamicGroupImpactDetailsJson = Convert-PolicyImpactDetailToJson -Details @($dynamicData.RuleDetails)
@@ -427,6 +447,7 @@ function Get-UserPolicyImpact {
         EntitlementPackageDetailsJson = $entitlementPackageDetailsJson
         LicensingImpactCount         = $licensingData.ImpactCount
         LicensingImpactDirections    = $licensingImpactDirections
+        LicensingImpactNames         = $licensingImpactNames
         LicensingImpactDetailsJson   = $licensingImpactDetailsJson
         TeamsCount                   = $teamsData.TeamsCount
         HasMailbox                   = $teamsData.HasMailbox

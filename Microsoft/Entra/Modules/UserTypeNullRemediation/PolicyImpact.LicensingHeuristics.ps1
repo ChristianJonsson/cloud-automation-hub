@@ -12,10 +12,14 @@ function Invoke-LicensingHeuristicsUserImpact {
         [string]$ProposedUserType,
 
         [Parameter(Mandatory = $true)]
-        [hashtable]$UserAreaStatus
+        [hashtable]$UserAreaStatus,
+
+        [Parameter(Mandatory = $true)]
+        [object]$PolicyContext
     )
 
-    $licenseCount = @($User.AssignedLicenses).Count
+    $assignedLicenses = @($User.AssignedLicenses)
+    $licenseCount = $assignedLicenses.Count
     $currentType = "$($User.UserType)"
     $resolvedProposedType = if ([string]::IsNullOrWhiteSpace($ProposedUserType)) { $currentType } else { "$ProposedUserType" }
 
@@ -34,21 +38,55 @@ function Invoke-LicensingHeuristicsUserImpact {
         $direction = 'GainsAccess'
     }
 
+    # Build SKU name lookup from context so detail records carry human-readable names.
+    $skuNameMap = @{}
+    if ($null -ne $PolicyContext -and $null -ne $PolicyContext.SubscribedSkuMap) {
+        foreach ($entry in $PolicyContext.SubscribedSkuMap.GetEnumerator()) {
+            $skuNameMap["$($entry.Key)"] = "$($entry.Value)"
+        }
+    }
+
     $details = @()
     if ($direction -ne 'NoMaterialChange') {
-        $details += [pscustomobject]@{
-            CurrentState = if ($licenseCount -gt 0) { 'Licensed' } else { 'NotLicensed' }
-            PostChangeState = if ($direction -eq 'LosesAccess') { 'PotentiallyNotLicensed' } elseif ($direction -eq 'GainsAccess') { 'PotentiallyLicensed' } else { 'Unchanged' }
-            ImpactDirection = $direction
-            Confidence = 'Low'
-            EvidenceSource = 'AssignedLicensesHeuristic'
-            AssignedLicenseCount = $licenseCount
+        if ($assignedLicenses.Count -gt 0) {
+            # LosesAccess path: enumerate each affected SKU so the caller knows exactly which licenses are at risk.
+            foreach ($license in $assignedLicenses) {
+                $skuId = "$(Get-ObjectValue -InputObject $license -PropertyName 'SkuId')"
+                if ([string]::IsNullOrWhiteSpace($skuId)) {
+                    $skuId = "$(Get-ObjectValue -InputObject $license -PropertyName 'skuId')"
+                }
+                $skuName = if ($skuNameMap.ContainsKey($skuId)) { $skuNameMap[$skuId] } else { "[Sku:$skuId]" }
+
+                $details += [pscustomobject]@{
+                    SkuId            = $skuId
+                    SkuName          = $skuName
+                    CurrentState     = 'Licensed'
+                    PostChangeState  = 'PotentiallyNotLicensed'
+                    ImpactDirection  = $direction
+                    Confidence       = 'Low'
+                    EvidenceSource   = 'AssignedLicensesHeuristic'
+                    AssignedLicenseCount = $licenseCount
+                }
+            }
+        }
+        else {
+            # GainsAccess path: no current licenses to enumerate — emit a single summary record.
+            $details += [pscustomobject]@{
+                SkuId            = ''
+                SkuName          = ''
+                CurrentState     = 'NotLicensed'
+                PostChangeState  = 'PotentiallyLicensed'
+                ImpactDirection  = $direction
+                Confidence       = 'Low'
+                EvidenceSource   = 'AssignedLicensesHeuristic'
+                AssignedLicenseCount = $licenseCount
+            }
         }
     }
 
     return [pscustomobject]@{
-        ImpactCount = $details.Count
+        ImpactCount     = $details.Count
         ImpactDirection = $direction
-        ImpactDetails = $details
+        ImpactDetails   = $details
     }
 }
