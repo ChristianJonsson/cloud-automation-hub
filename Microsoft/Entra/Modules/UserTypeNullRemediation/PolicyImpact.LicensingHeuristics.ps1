@@ -70,10 +70,12 @@ function Invoke-LicensingHeuristicsUserImpact {
             }
         }
         else {
-            # GainsAccess path: no current licenses to enumerate — emit a single summary record.
+            # GainsAccess path: no current licenses to enumerate.
+            # Use a named placeholder so LicensingImpactNames is never blank and a reviewer
+            # understands a manual license assignment is required rather than suspecting a data gap.
             $details += [pscustomobject]@{
                 SkuId            = ''
-                SkuName          = ''
+                SkuName          = '[NeedsLicenseAssignment]'
                 CurrentState     = 'NotLicensed'
                 PostChangeState  = 'PotentiallyLicensed'
                 ImpactDirection  = $direction

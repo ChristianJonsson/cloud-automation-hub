@@ -355,6 +355,10 @@ function Get-UserPolicyImpact {
     $teamsData       = Invoke-TeamsExchangeHeuristicsUserImpact  -User $User -UserAreaStatus $userAreaStatus
     $licensingData   = Invoke-LicensingHeuristicsUserImpact      -User $User -ProposedUserType $ProposedUserType -UserAreaStatus $userAreaStatus -PolicyContext $PolicyContext
 
+    if ($licensingData.ImpactDirection -eq 'GainsAccess') {
+        Write-PolicyImpactLog -Level 'INFO' -Message "Licensing note for $($User.UserPrincipalName) ($($User.Id)): user currently has no assigned licenses and is proposed as Member. No specific license name is available — a license will need to be assigned manually after the userType change. See LicensingImpactNames='[NeedsLicenseAssignment]' in the export."
+    }
+
     $memberGroupIds  = @(Get-UniqueStringArray -InputArray @($groupData.GroupMemberships | ForEach-Object { if ($_.Id) { "$($_.Id)" } }))
     if ($null -eq $memberGroupIds) { $memberGroupIds = @() }
 
