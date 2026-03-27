@@ -19,11 +19,18 @@ function Invoke-LicensingHeuristicsUserImpact {
     $currentType = "$($User.UserType)"
     $resolvedProposedType = if ([string]::IsNullOrWhiteSpace($ProposedUserType)) { $currentType } else { "$ProposedUserType" }
 
+    # currentType is null/empty for all users targeted by this script (UserType = null).
+    # Include that case alongside the explicit Member/Guest transitions so the heuristic
+    # fires correctly for the primary use case.
+    $isCurrentTypeUnset = [string]::IsNullOrWhiteSpace($currentType)
+
     $direction = 'NoMaterialChange'
-    if ($licenseCount -gt 0 -and $currentType -eq 'Member' -and $resolvedProposedType -eq 'Guest') {
+    if ($licenseCount -gt 0 -and ($currentType -eq 'Member' -or $isCurrentTypeUnset) -and $resolvedProposedType -eq 'Guest') {
+        # Has licenses and is being assigned Guest — likely to lose member-tier licensing benefits.
         $direction = 'LosesAccess'
     }
-    elseif ($licenseCount -eq 0 -and $currentType -eq 'Guest' -and $resolvedProposedType -eq 'Member') {
+    elseif ($licenseCount -eq 0 -and ($currentType -eq 'Guest' -or $isCurrentTypeUnset) -and $resolvedProposedType -eq 'Member') {
+        # No licenses and is being assigned Member — will likely need licensing to use member-tier services.
         $direction = 'GainsAccess'
     }
 

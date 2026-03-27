@@ -18,11 +18,13 @@ function Invoke-EntitlementManagementUserImpact {
     if ($UserAreaStatus['EntitlementManagement'] -eq 'Available') {
         try {
             $entitlementAssignments = @(
-                Get-MgEntitlementManagementAssignment `
-                    -Filter "target/objectid eq '$($User.Id)'" `
-                    -ExpandProperty @('target', 'accessPackage') `
-                    -All `
-                    -ErrorAction Stop
+                Invoke-PolicyAreaGraphWithRetry -OperationName "Get-MgEntitlementManagementAssignment ($($User.Id))" -Operation {
+                    Get-MgEntitlementManagementAssignment `
+                        -Filter "target/objectid eq '$($User.Id)'" `
+                        -ExpandProperty @('target', 'accessPackage') `
+                        -All `
+                        -ErrorAction Stop
+                }
             )
         }
         catch {

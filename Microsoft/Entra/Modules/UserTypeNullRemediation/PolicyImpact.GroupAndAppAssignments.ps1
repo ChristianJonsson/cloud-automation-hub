@@ -16,8 +16,16 @@ function Invoke-GroupAndAppAssignmentsUserImpact {
 
     if ($UserAreaStatus['GroupAndAppAssignments'] -eq 'Available') {
         try {
-            $groupMemberships = @(Get-MgUserMemberOf -UserId $User.Id -All -ErrorAction Stop)
-            $appRoleAssignments = @(Get-MgUserAppRoleAssignment -UserId $User.Id -All -ErrorAction Stop)
+            $groupMemberships = @(
+                Invoke-PolicyAreaGraphWithRetry -OperationName "Get-MgUserMemberOf ($($User.Id))" -Operation {
+                    Get-MgUserMemberOf -UserId $User.Id -All -ErrorAction Stop
+                }
+            )
+            $appRoleAssignments = @(
+                Invoke-PolicyAreaGraphWithRetry -OperationName "Get-MgUserAppRoleAssignment ($($User.Id))" -Operation {
+                    Get-MgUserAppRoleAssignment -UserId $User.Id -All -ErrorAction Stop
+                }
+            )
         }
         catch {
             $UserAreaStatus['GroupAndAppAssignments'] = 'Unavailable'

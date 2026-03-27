@@ -391,7 +391,9 @@ foreach ($prop in $properties){ Write-Host "  - $prop" }
 
 $usersResult = Get-UsersFromGraphOrCache -UseCachedGraphResults:$UseCachedGraphResults -Properties $properties -RequiredCachedUserProperties $requiredCachedUserProperties
 $users = @($usersResult.Users)
-$Global:users = $users
+if (-not $usersResult.UsedCache) {
+    $Global:users = $users
+}
 
 # Force array output so Count is reliable for 0/1/many results.
 $usersWithNoUserType = @($users | Where-Object { $_.UserType -eq $null })
@@ -411,7 +413,9 @@ Write-Log("Users selected for classification, evaluation, and update processing:
 
 $domainsResult = Get-VerifiedDomainsFromGraphOrCache -UseCachedGraphResults:$UseCachedGraphResults
 $verifiedDomains = @($domainsResult.Domains)
-$Global:verifiedDomains = $verifiedDomains
+if (-not $domainsResult.UsedCache) {
+    $Global:verifiedDomains = $verifiedDomains
+}
 
 if ($verifiedDomains.Count -gt 0) {
     Write-Log("Domain check enabled: users with missing UserType and UPN suffix in verified domains can be treated as confident cloud-only members.")
@@ -659,8 +663,8 @@ foreach ($candidate in $updateCandidates) {
         continue
     }
 
-    # Delay for easier visual progress tracking during manual runs.
-    Start-Sleep -Milliseconds 150
+    # Brief delay for visual progress tracking during manual runs.
+    Start-Sleep -Milliseconds 20
 }
 
 Write-Progress -Activity $(if ($isPreviewMode) { "Previewing UserType updates ($TargetType) - WhatIf" } else { "Updating UserType ($TargetType)" }) -Completed

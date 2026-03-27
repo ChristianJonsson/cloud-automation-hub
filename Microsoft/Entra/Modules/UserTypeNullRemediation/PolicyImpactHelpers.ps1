@@ -146,6 +146,54 @@ function Convert-ImpactDirectionToReportLabel {
     }
 }
 
+function Invoke-PolicyAreaGraphWithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Operation,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OperationName,
+
+        [ValidateRange(1, 5)]
+        [int]$MaxAttempts = 3,
+
+        [ValidateRange(1, 30)]
+        [int]$InitialDelaySeconds = 2,
+
+        [ValidateRange(1, 60)]
+        [int]$MaxDelaySeconds = 16
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            return & $Operation
+        }
+        catch {
+            $errorMessage = "$($_.Exception.Message)".ToLowerInvariant()
+            $isTransient = (
+                $errorMessage.Contains('too many requests') -or
+                $errorMessage.Contains('429') -or
+                $errorMessage.Contains('timed out') -or
+                $errorMessage.Contains('temporarily unavailable') -or
+                $errorMessage.Contains('service unavailable') -or
+                $errorMessage.Contains('internal server error') -or
+                $errorMessage.Contains('bad gateway') -or
+                $errorMessage.Contains('gateway timeout')
+            )
+
+            if (-not $isTransient -or $attempt -ge $MaxAttempts) {
+                throw
+            }
+
+            $delaySeconds = [Math]::Min($MaxDelaySeconds, $InitialDelaySeconds * [int][Math]::Pow(2, $attempt - 1))
+            Write-PolicyImpactLog -Level 'WARNING' -Message "Transient Graph error during '$OperationName' (attempt $attempt of $MaxAttempts): $($_.Exception.Message). Retrying in $delaySeconds s."
+            Start-Sleep -Seconds $delaySeconds
+        }
+    }
+
+    throw "Unexpected retry loop exit for '$OperationName'."
+}
+
 function Convert-StateToPolicyStateLabel {
     param([bool]$State)
 
