@@ -59,7 +59,11 @@ function Invoke-DynamicGroupsUserImpact {
             $evaluateSuccess = $true
         }
         catch {
-            Write-PolicyImpactLog -Level 'WARNING' -Message "Dynamic membership evaluation failed for user $($User.UserPrincipalName) ($($User.Id)) in group $($group.DisplayName) ($($group.Id)); falling back to group membership list for current membership: $($_.Exception.Message)"
+            # 405 MethodNotAllowed means the evaluate endpoint is not supported for this group type.
+            # This is a permanent API limitation, not a transient error — log at INFO to avoid noise.
+            $errMsg = "$($_.Exception.Message)"
+            $logLevel = if ($errMsg -match '405|MethodNotAllowed|Method Not Allowed') { 'INFO' } else { 'WARNING' }
+            Write-PolicyImpactLog -Level $logLevel -Message "Dynamic membership evaluation failed for user $($User.UserPrincipalName) ($($User.Id)) in group $($group.DisplayName) ($($group.Id)); falling back to group membership list for current membership: $errMsg"
         }
 
         if (-not $evaluateSuccess) {

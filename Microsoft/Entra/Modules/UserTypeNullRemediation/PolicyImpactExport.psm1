@@ -103,6 +103,7 @@ function New-PolicyImpactRecord {
             LicensingImpactCount = 0
             LicensingImpactDirections = ''
             LicensingImpactNames = ''
+            LicensingAssignedNames = ''
             LicensingImpactDetailsJson = '[]'
             TeamsCount = 0
             HasMailbox = $false
@@ -160,6 +161,7 @@ function New-PolicyImpactRecord {
         LicensingImpactCount = $impact.LicensingImpactCount
         LicensingImpactDirections = $impact.LicensingImpactDirections
         LicensingImpactNames = $impact.LicensingImpactNames
+        LicensingAssignedNames = $impact.LicensingAssignedNames
         LicensingImpactDetailsJson = $impact.LicensingImpactDetailsJson
         TeamsCount = $impact.TeamsCount
         HasMailbox = $impact.HasMailbox

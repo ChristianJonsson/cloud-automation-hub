@@ -84,9 +84,26 @@ function Invoke-LicensingHeuristicsUserImpact {
         }
     }
 
+    # Always enumerate current license names regardless of impact direction so the
+    # caller has visibility into what licenses the user holds even for NoMaterialChange.
+    $assignedLicenseNames = ''
+    if ($assignedLicenses.Count -gt 0) {
+        $licenseNames = @(
+            $assignedLicenses | ForEach-Object {
+                $skuId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'SkuId')"
+                if ([string]::IsNullOrWhiteSpace($skuId)) {
+                    $skuId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'skuId')"
+                }
+                if ($skuNameMap.ContainsKey($skuId)) { $skuNameMap[$skuId] } else { "[Sku:$skuId]" }
+            } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        $assignedLicenseNames = $licenseNames -join '; '
+    }
+
     return [pscustomobject]@{
-        ImpactCount     = $details.Count
-        ImpactDirection = $direction
-        ImpactDetails   = $details
+        ImpactCount          = $details.Count
+        ImpactDirection      = $direction
+        ImpactDetails        = $details
+        AssignedLicenseNames = $assignedLicenseNames
     }
 }

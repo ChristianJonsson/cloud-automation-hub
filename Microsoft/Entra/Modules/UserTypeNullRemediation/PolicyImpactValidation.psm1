@@ -316,7 +316,9 @@ function Convert-PolicyImpactDetailToJson {
         return '[]'
     }
 
-    return ($detailArray | ConvertTo-Json -Depth 8 -Compress)
+    # Use -InputObject (not pipeline) to preserve the array wrapper when there is exactly one element.
+    # Piping a single object through ConvertTo-Json outputs a plain object {} rather than an array [{}].
+    return (ConvertTo-Json -InputObject $detailArray -Depth 8 -Compress)
 }
 
 function Join-UniqueDetailText {
@@ -408,6 +410,7 @@ function Get-UserPolicyImpact {
     $entitlementPackageNames = Join-UniqueDetailText -Values @($entitlementData.AssignmentDetails | ForEach-Object { $_.AccessPackageName })
     $licensingImpactDirections = Join-UniqueDetailText -Values @($licensingData.ImpactDetails | ForEach-Object { $_.ImpactDirection })
     $licensingImpactNames = Join-UniqueDetailText -Values @($licensingData.ImpactDetails | ForEach-Object { $_.SkuName } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $licensingAssignedNames = "$($licensingData.AssignedLicenseNames)"
 
     $conditionalAccessPolicyDetailsJson = Convert-PolicyImpactDetailToJson -Details @($caData.MatchDetails)
     $dynamicGroupImpactDetailsJson = Convert-PolicyImpactDetailToJson -Details @($dynamicData.RuleDetails)
@@ -448,6 +451,7 @@ function Get-UserPolicyImpact {
         LicensingImpactCount         = $licensingData.ImpactCount
         LicensingImpactDirections    = $licensingImpactDirections
         LicensingImpactNames         = $licensingImpactNames
+        LicensingAssignedNames       = $licensingAssignedNames
         LicensingImpactDetailsJson   = $licensingImpactDetailsJson
         TeamsCount                   = $teamsData.TeamsCount
         HasMailbox                   = $teamsData.HasMailbox

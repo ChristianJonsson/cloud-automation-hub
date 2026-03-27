@@ -57,14 +57,16 @@ function Invoke-GroupAndAppAssignmentsUserImpact {
                     $resourceName = "$(Get-ObjectValue -InputObject $_ -PropertyName 'resourceDisplayName')"
                 }
 
-                $appId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'AppId')"
-                if ([string]::IsNullOrWhiteSpace($appId)) {
-                    $appId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'appId')"
+                # Get-MgUserAppRoleAssignment returns ResourceId (SP object ID), not AppId.
+                # AppId (client ID) is not available without a separate SP lookup.
+                $resourceId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'ResourceId')"
+                if ([string]::IsNullOrWhiteSpace($resourceId)) {
+                    $resourceId = "$(Get-ObjectValue -InputObject $_ -PropertyName 'resourceId')"
                 }
 
                 [pscustomobject]@{
-                    AppId = $appId
-                    ResourceDisplayName = if ([string]::IsNullOrWhiteSpace($resourceName)) { "[UnnamedApp:$appId]" } else { $resourceName }
+                    ResourceId = $resourceId
+                    ResourceDisplayName = if ([string]::IsNullOrWhiteSpace($resourceName)) { "[UnnamedApp:$resourceId]" } else { $resourceName }
                 }
             }
     )
