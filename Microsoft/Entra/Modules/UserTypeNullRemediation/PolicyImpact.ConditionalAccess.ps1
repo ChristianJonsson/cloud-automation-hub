@@ -2,6 +2,48 @@
 # Dot-sourced by PolicyImpactValidation.psm1 — not imported directly.
 # Requires $UserGroupIds (from GroupAndAppAssignments) to evaluate group-based conditions.
 
+function Get-GuestOrExternalTypeString {
+    param([object]$GuestOrExternalObj)
+
+    if ($null -eq $GuestOrExternalObj) {
+        return ''
+    }
+
+    $value = Get-ObjectValue -InputObject $GuestOrExternalObj -PropertyName 'GuestOrExternalUserTypes'
+    return if ($null -ne $value) { "$value" } else { '' }
+}
+
+function Test-UserMatchesGuestOrExternalTypes {
+    <#
+    .SYNOPSIS
+        Returns $true if the given UserType matches one of the GuestOrExternalUserTypes values.
+    .DESCRIPTION
+        Maps Entra UserType ('Guest', 'Member') to the corresponding conditionalAccessGuestOrExternalUserTypes
+        enum values used in Conditional Access policy conditions. The GuestOrExternalUserTypes field is a
+        comma-separated string (e.g. "b2bCollaborationGuest,b2bCollaborationMember").
+
+        Mappings:
+          Guest  -> b2bCollaborationGuest, internalGuest
+          Member -> b2bCollaborationMember
+    #>
+    param(
+        [string]$UserType,
+        [string]$GuestOrExternalUserTypes
+    )
+
+    if ([string]::IsNullOrWhiteSpace($UserType) -or [string]::IsNullOrWhiteSpace($GuestOrExternalUserTypes)) {
+        return $false
+    }
+
+    $types = @($GuestOrExternalUserTypes -split ',' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
+
+    switch ($UserType) {
+        'Guest'  { return ($types -contains 'b2bcollaborationguest' -or $types -contains 'internalguest') }
+        'Member' { return ($types -contains 'b2bcollaborationmember') }
+        default  { return $false }
+    }
+}
+
 function Invoke-ConditionalAccessUserImpact {
     param(
         [Parameter(Mandatory = $true)]
@@ -29,9 +71,8 @@ function Invoke-ConditionalAccessUserImpact {
         return [pscustomobject]@{ Matches = $caMatches; MatchCount = 0; MatchDetails = @() }
     }
 
-    $currentIsGuest = ("$($User.UserType)" -eq 'Guest')
-    $proposedUserTypeResolved = if ([string]::IsNullOrWhiteSpace($ProposedUserType)) { "$($User.UserType)" } else { "$ProposedUserType" }
-    $postChangeIsGuest = ($proposedUserTypeResolved -eq 'Guest')
+    $currentUserTypeResolved = if ([string]::IsNullOrWhiteSpace("$($User.UserType)")) { '' } else { "$($User.UserType)" }
+    $proposedUserTypeResolved = if ([string]::IsNullOrWhiteSpace($ProposedUserType)) { $currentUserTypeResolved } else { "$ProposedUserType" }
 
     foreach ($policy in @($PolicyContext.ConditionalAccessPolicies)) {
         $conditions = Get-ObjectValue -InputObject $policy -PropertyName 'Conditions'
@@ -44,13 +85,14 @@ function Invoke-ConditionalAccessUserImpact {
         $excludeUsers = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'ExcludeUsers'
         $includeGroups = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'IncludeGroups'
         $excludeGroups = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'ExcludeGroups'
-        $includeGuestExternal = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'IncludeGuestsOrExternalUsers'
-        $excludeGuestExternal = Get-PolicyConditionList -ConditionObject $usersCondition -PropertyName 'ExcludeGuestsOrExternalUsers'
 
-        $currentGuestIncluded = ($currentIsGuest -and $includeGuestExternal.Count -gt 0)
-        $postGuestIncluded = ($postChangeIsGuest -and $includeGuestExternal.Count -gt 0)
-        $currentGuestExcluded = ($currentIsGuest -and $excludeGuestExternal.Count -gt 0)
-        $postGuestExcluded = ($postChangeIsGuest -and $excludeGuestExternal.Count -gt 0)
+        $includeGuestTypes = Get-GuestOrExternalTypeString -GuestOrExternalObj (Get-ObjectValue -InputObject $usersCondition -PropertyName 'IncludeGuestsOrExternalUsers')
+        $excludeGuestTypes = Get-GuestOrExternalTypeString -GuestOrExternalObj (Get-ObjectValue -InputObject $usersCondition -PropertyName 'ExcludeGuestsOrExternalUsers')
+
+        $currentGuestIncluded = Test-UserMatchesGuestOrExternalTypes -UserType $currentUserTypeResolved -GuestOrExternalUserTypes $includeGuestTypes
+        $postGuestIncluded    = Test-UserMatchesGuestOrExternalTypes -UserType $proposedUserTypeResolved -GuestOrExternalUserTypes $includeGuestTypes
+        $currentGuestExcluded = Test-UserMatchesGuestOrExternalTypes -UserType $currentUserTypeResolved -GuestOrExternalUserTypes $excludeGuestTypes
+        $postGuestExcluded    = Test-UserMatchesGuestOrExternalTypes -UserType $proposedUserTypeResolved -GuestOrExternalUserTypes $excludeGuestTypes
 
         $isCurrentlyIncluded =
             ($includeUsers -contains 'All') -or
@@ -98,18 +140,6 @@ function Invoke-ConditionalAccessUserImpact {
 
             $policyState = "$(Get-ObjectValue -InputObject $policy -PropertyName 'State')"
 
-            # Extract GuestOrExternalUserTypes from the include condition object so reviewers can see
-            # which specific guest subtypes (e.g. b2bCollaborationGuest, b2bCollaborationMember) this
-            # policy targets. Match logic uses the binary presence check above; this is metadata only.
-            $includeGuestExternalRaw = Get-ObjectValue -InputObject $usersCondition -PropertyName 'IncludeGuestsOrExternalUsers'
-            $includeGuestOrExtUserTypes = ''
-            if ($null -ne $includeGuestExternalRaw) {
-                $rawTypes = Get-ObjectValue -InputObject $includeGuestExternalRaw -PropertyName 'GuestOrExternalUserTypes'
-                if ($null -ne $rawTypes) {
-                    $includeGuestOrExtUserTypes = "$rawTypes"
-                }
-            }
-
             $matchDetails += [pscustomobject]@{
                 Id = $policyId
                 DisplayName = $policyName
@@ -117,7 +147,8 @@ function Invoke-ConditionalAccessUserImpact {
                 PostChangeState = Convert-StateToPolicyStateLabel -State $postChangeApplies
                 ImpactDirection = Convert-ImpactDirectionToReportLabel -Direction $direction
                 PolicyState = $policyState
-                IncludeGuestOrExternalUserTypes = $includeGuestOrExtUserTypes
+                IncludeGuestOrExternalUserTypes = $includeGuestTypes
+                ExcludeGuestOrExternalUserTypes = $excludeGuestTypes
                 Confidence = 'High'
                 EvidenceSource = 'ConditionalAccessPolicy.Users'
             }
