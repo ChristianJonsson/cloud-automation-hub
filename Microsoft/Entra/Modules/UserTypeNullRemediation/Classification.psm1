@@ -1,80 +1,3 @@
-function Get-IdentitiesSummary {
-    param([object[]]$Identities)
-
-    if (-not $Identities -or $Identities.Count -eq 0) {
-        return ''
-    }
-
-    $parts = foreach ($identity in $Identities) {
-        $signInType = "$($identity.SignInType)"
-        $issuer = "$($identity.Issuer)"
-        $issuerAssignedId = "$($identity.IssuerAssignedId)"
-        "$signInType|$issuer|$issuerAssignedId"
-    }
-
-    return ($parts -join '; ')
-}
-
-function Get-OnPremisesExtensionAttributeMap {
-    param([object]$OnPremisesExtensionAttributes)
-
-    $attributeMap = [ordered]@{}
-
-    foreach ($index in 1..15) {
-        $propertyName = "ExtensionAttribute$index"
-        $attributeMap[$propertyName] = if ($null -ne $OnPremisesExtensionAttributes) {
-            $OnPremisesExtensionAttributes.$propertyName
-        }
-        else {
-            $null
-        }
-    }
-
-    return $attributeMap
-}
-
-function New-PolicyImpactRecord {
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$User,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Reason,
-
-        [string]$ProposedUserType = ''
-    )
-
-    $record = [ordered]@{
-        TimestampUtc = (Get-Date).ToUniversalTime().ToString('o')
-        CreatedDateTime = $User.CreatedDateTime
-        UserPrincipalName = $User.UserPrincipalName
-        DisplayName = $User.DisplayName
-        JobTitle = $User.JobTitle
-        CompanyName = $User.CompanyName
-        Department = $User.Department
-        OfficeLocation = $User.OfficeLocation
-        Id = $User.Id
-        CurrentUserType = $User.UserType
-        ProposedUserType = $ProposedUserType
-        Reason = $Reason
-        CreationType = $User.CreationType
-        ExternalUserState = $User.ExternalUserState
-        AccountEnabled = $User.AccountEnabled
-        OnPremisesSyncEnabled = $User.OnPremisesSyncEnabled
-        OnPremisesImmutableId = $User.OnPremisesImmutableId
-        OnPremisesSecurityIdentifier = $User.OnPremisesSecurityIdentifier
-        AssignedLicensesCount = @($User.AssignedLicenses).Count
-        IdentitiesSummary = Get-IdentitiesSummary -Identities $User.Identities
-        PolicyImpactNotes = 'Review Conditional Access, dynamic group rules, app/group assignments, and entitlement policies before write.'
-    }
-    # Include all on-premises extension attributes in the record for potential troubleshooting value, even though they are not currently used in classification logic.
-    foreach ($entry in (Get-OnPremisesExtensionAttributeMap -OnPremisesExtensionAttributes $User.OnPremisesExtensionAttributes).GetEnumerator()) {
-        $record[$entry.Key] = $entry.Value
-    }
-
-    return [pscustomobject]$record
-}
-
 function Get-OnPremisesSyncSignals {
     param(
         [Parameter(Mandatory = $true)]
@@ -253,4 +176,4 @@ function Test-ConfidentGuestCandidate {
     }
 }
 
-Export-ModuleMember -Function Get-IdentitiesSummary, New-PolicyImpactRecord, Test-ConfidentMemberCandidate, Test-ConfidentGuestCandidate
+Export-ModuleMember -Function Test-ConfidentMemberCandidate, Test-ConfidentGuestCandidate

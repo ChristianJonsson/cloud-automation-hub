@@ -10,3 +10,7 @@ PowerShell scripts and automation tools for Azure and Entra administration. Work
 - `Microsoft/Common/Modules/` for cross-provider shared modules.
 
 See `Microsoft/README.md` for module layout and import conventions.
+
+## Microsoft Graph permissions
+
+Scripts in this repository that call Microsoft Graph require delegated permissions granted via `Connect-MgGraph -Scopes`. The full list of required and optional scopes — grouped by purpose — is documented in [Microsoft/Entra/README.md](Microsoft/Entra/README.md#microsoft-graph-delegated-scopes).

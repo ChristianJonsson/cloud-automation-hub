@@ -12,6 +12,10 @@ This folder groups cloud automation by provider and identity platform.
 ## Current examples
 
 - Entra feature module: `Entra/Modules/UserTypeNullRemediation/`
-- Entra script: `Entra/Update-Users-Where-UserType-Missing.ps1`
+- Entra script: `Entra/UserTypeNullRemediation.ps1`
 - Azure module root (ready): `Azure/Modules/`
 - Cross-provider module root (ready): `Common/Modules/`
+
+## Microsoft Graph permissions
+
+Scripts under `Entra/` use delegated Graph auth. Required and optional scopes are grouped by purpose in the [Entra README — Microsoft Graph Delegated Scopes](Entra/README.md#microsoft-graph-delegated-scopes) section.
