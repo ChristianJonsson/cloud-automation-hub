@@ -1,6 +1,6 @@
 # Per-user evaluator: LicensingHeuristics policy area.
 # Dot-sourced by PolicyImpactValidation.psm1 — not imported directly.
-# Probe-only area: no per-user licensing data is computed in the current implementation.
+# Computes per-user licensing impact direction and licensing details (including assigned license information).
 
 function Invoke-LicensingHeuristicsUserImpact {
     param(

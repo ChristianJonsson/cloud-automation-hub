@@ -95,7 +95,7 @@ function Invoke-DynamicGroupsUserImpact {
             'NoMaterialChange'
         }
         else {
-            'ManualReview'
+            'NoMaterialChange'
         }
 
         # Only report groups where a meaningful impact is expected.
