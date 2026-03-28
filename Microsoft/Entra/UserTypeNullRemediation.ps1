@@ -643,13 +643,11 @@ foreach ($candidate in $updateCandidates) {
 
     if ($isPreviewMode) {
         Write-Log -Message "WHATIF: Would update $($user.UserPrincipalName) (UserId: $($user.Id)) to UserType='$($candidate.ProposedUserType)'" -NoConsole
-        Start-Sleep -Milliseconds 20
         continue
     }
 
     if (-not $PSCmdlet.ShouldProcess($user.UserPrincipalName, "Set UserType to '$($candidate.ProposedUserType)'")) {
         Write-Log -Message "WARNING: Update cancelled by ShouldProcess for $($user.UserPrincipalName) (UserId: $($user.Id)); requested UserType='$($candidate.ProposedUserType)'" -NoConsole
-        Start-Sleep -Milliseconds 20
         continue
     }
 
