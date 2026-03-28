@@ -4,6 +4,35 @@
 $script:DefaultLogDirectory = Join-Path (Split-Path $PSScriptRoot -Parent) 'Logs'
 $script:LogFile = Join-Path $script:DefaultLogDirectory 'UserUpdate.log'
 
+function Get-DefaultUserUpdateLogPath {
+    param(
+        [switch]$PreviewMode,
+        [string]$BaseDirectory = '.'
+    )
+
+    $fileName = if ($PreviewMode) { 'UserUpdate.preview.log' } else { 'UserUpdate.log' }
+    return Join-Path $BaseDirectory (Join-Path 'Logs' $fileName)
+}
+
+function Get-DefaultUserUpdatePreflightArtifactPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Timestamp,
+
+        [switch]$PreviewMode,
+        [string]$BaseDirectory = '.'
+    )
+
+    if ($PreviewMode) {
+        $fileName = "Preflight.preview-$Timestamp.json"
+        return Join-Path $BaseDirectory (Join-Path 'Reports\UserTypeNullRemediation\Reports_Preflight_Preview' $fileName)
+    }
+    else {
+        $fileName = "Preflight-$Timestamp.json"
+        return Join-Path $BaseDirectory (Join-Path 'Reports\UserTypeNullRemediation\Reports_Preflight' $fileName)
+    }
+}
+
 function Set-LogFilePath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -43,4 +72,4 @@ function Write-Log {
     }
 }
 
-Export-ModuleMember -Function Write-Log, Set-LogFilePath
+Export-ModuleMember -Function Get-DefaultUserUpdateLogPath, Get-DefaultUserUpdatePreflightArtifactPath, Write-Log, Set-LogFilePath

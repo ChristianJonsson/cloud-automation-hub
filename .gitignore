@@ -412,5 +412,5 @@ FodyWeavers.xsd
 *.msm
 *.msp
 
-# Scripts in this respository outputting Entra generated reports
+# Generated Entra remediation artifacts
 Microsoft/Entra/Reports/
