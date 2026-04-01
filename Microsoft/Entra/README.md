@@ -2,9 +2,64 @@
 
 This folder contains Entra-focused automation scripts and supporting modules.
 
-## Script
+## Scripts
 
 - `UserTypeNullRemediation.ps1`
+- `Get-AllEntraUsersExpandedProperties.ps1`
+
+---
+
+## Get-AllEntraUsersExpandedProperties.ps1
+
+Retrieves all users from Microsoft Graph with every selectable property and the manager navigation property expanded, then exports a flat CSV with one row per user.
+
+Complex and multi-valued properties are flattened to semicolon-delimited strings. Nested objects (`employeeOrgData`, `onPremisesExtensionAttributes`) are expanded into individual columns. Extension attributes 1–15 each get their own column.
+
+### Requirements
+
+1. PowerShell session with access to the repository.
+2. Microsoft Graph PowerShell connectivity.
+
+#### Microsoft Graph Delegated Scopes
+
+- `User.Read.All`
+- `Directory.Read.All`
+
+### Outputs
+
+- CSV: `Reports/GetAllEntraUsers/EntraUsersExport/EntraUsers_<timestamp>.csv`
+- Log: `Logs/EntraUsersExport.log`
+
+#### CSV Columns
+
+| Group | Columns |
+|---|---|
+| Core identity | `Id`, `DisplayName`, `GivenName`, `Surname`, `UserPrincipalName`, `Mail`, `MailNickname`, `UserType`, `AccountEnabled` |
+| Contact | `BusinessPhones`, `MobilePhone`, `FaxNumber`, `OtherMails`, `ImAddresses`, `ProxyAddresses` |
+| Location | `City`, `Country`, `State`, `StreetAddress`, `PostalCode`, `OfficeLocation`, `UsageLocation`, `PreferredDataLocation` |
+| Organisation | `CompanyName`, `Department`, `Division`, `JobTitle`, `EmployeeId`, `EmployeeType`, `EmployeeHireDate`, `EmployeeOrgDataCostCenter`, `EmployeeOrgDataDivision`, `ManagerDisplayName`, `ManagerId` |
+| Dates | `CreatedDateTime`, `LastPasswordChangeDateTime`, `SignInSessionsValidFromDateTime`, `DeletedDateTime` |
+| Auth / sync | `OnPremisesSyncEnabled`, `OnPremisesLastSyncDateTime`, `OnPremisesDistinguishedName`, `OnPremisesDomainName`, `OnPremisesSamAccountName`, `OnPremisesUserPrincipalName`, `OnPremisesImmutableId`, `OnPremisesSecurityIdentifier`, `PasswordPolicies`, `Identities` |
+| Licensing | `AssignedLicenses`, `AssignedPlans` |
+| Age / consent | `AgeGroup`, `ConsentProvidedForMinor`, `LegalAgeGroupClassification` |
+| Misc | `PreferredLanguage`, `ShowInAddressList`, `ExternalUserState`, `ExternalUserStateChangeDateTime`, `IsResourceAccount`, `IsManagementRestricted` |
+| Extension attributes | `ExtensionAttribute1` – `ExtensionAttribute15` |
+
+### Usage
+
+```powershell
+.\Get-AllEntraUsersExpandedProperties.ps1
+```
+
+### Shared Modules Used
+
+- `Modules/Shared/GraphConnection.psm1` — Graph authentication bootstrap
+- `Modules/Shared/GraphData.psm1` — retry logic with exponential backoff
+- `../Common/Modules/Shared/Logging.psm1` — timestamped file and console logging
+
+---
+
+## UserTypeNullRemediation.ps1
 
 ## What This Script Does
 

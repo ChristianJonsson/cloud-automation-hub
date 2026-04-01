@@ -362,4 +362,4 @@ function Get-VerifiedDomainsFromGraphOrCache {
     }
 }
 
-Export-ModuleMember -Function Get-TenantVerifiedDomains, Test-CachedUsersData, Test-CachedVerifiedDomainsData, Get-UsersFromGraphOrCache, Get-VerifiedDomainsFromGraphOrCache
+Export-ModuleMember -Function Get-TenantVerifiedDomains, Test-CachedUsersData, Test-CachedVerifiedDomainsData, Get-UsersFromGraphOrCache, Get-VerifiedDomainsFromGraphOrCache, Invoke-GraphOperationWithRetry
