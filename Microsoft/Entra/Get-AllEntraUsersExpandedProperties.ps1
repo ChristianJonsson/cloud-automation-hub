@@ -1,3 +1,23 @@
+<#
+.SYNOPSIS
+Exports all Entra ID users with expanded manager information to a flat CSV file.
+
+.DESCRIPTION
+Retrieves all users from Microsoft Graph with every selectable property and the manager
+navigation property expanded. Flattens complex and multi-valued properties to
+semicolon-delimited strings, expands nested objects (employeeOrgData,
+onPremisesExtensionAttributes) into individual columns, and writes one CSV row per user.
+
+Uses shared modules for Graph authentication, retry logic, and timestamped logging.
+Outputs a dated CSV under Reports\GetAllEntraUsers\EntraUsersExport\ and a log file
+under Logs\.
+
+.NOTES
+Requires Microsoft Graph PowerShell connectivity with the following delegated scopes:
+  User.Read.All
+  Directory.Read.All
+#>
+
 # --------------------------------------------------
 # Import shared modules
 # --------------------------------------------------
@@ -45,15 +65,13 @@ $selectProperties = @(
     "imAddresses", "isResourceAccount", "isManagementRestricted"
 )
 
-$select = $selectProperties -join ","
-
 # --------------------------------------------------
 # Fetch all users with manager expansion
 # --------------------------------------------------
 Write-Log('Fetching users from Microsoft Graph with expanded manager...')
 
 $users = Invoke-GraphOperationWithRetry -OperationName 'Get-MgUser all users with manager expand' -Operation {
-    Get-MgUser -All -Property $select -ExpandProperty "manager" -ConsistencyLevel eventual -ErrorAction Stop
+    Get-MgUser -All -Property $selectProperties -ExpandProperty "manager" -ConsistencyLevel eventual -ErrorAction Stop
 }
 
 Write-Log("Retrieved $($users.Count) users.")

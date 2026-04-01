@@ -27,7 +27,7 @@ Complex and multi-valued properties are flattened to semicolon-delimited strings
 
 ### Outputs
 
-- CSV: `Reports/EntraUsersExport/EntraUsers_<timestamp>.csv`
+- CSV: `Reports/GetAllEntraUsers/EntraUsersExport/EntraUsers_<timestamp>.csv`
 - Log: `Logs/EntraUsersExport.log`
 
 #### CSV Columns
