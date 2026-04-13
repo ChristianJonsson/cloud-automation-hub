@@ -286,7 +286,27 @@ function Initialize-DirectoryIfNeeded {
     }
 }
 
-function Export-PolicyImpactCsvIfAny {
+function ConvertTo-DeserializedRecord {
+    param([pscustomobject]$Record)
+
+    $props = [ordered]@{}
+    foreach ($prop in $Record.PSObject.Properties) {
+        if ($prop.Name -like '*Json') {
+            try {
+                $props[$prop.Name] = ConvertFrom-Json -InputObject $prop.Value
+            }
+            catch {
+                $props[$prop.Name] = $prop.Value
+            }
+        }
+        else {
+            $props[$prop.Name] = $prop.Value
+        }
+    }
+    return [pscustomobject]$props
+}
+
+function Export-PolicyImpactRecordsIfAny {
     param(
         [object[]]$Candidates = @(),
 
@@ -303,7 +323,10 @@ function Export-PolicyImpactCsvIfAny {
 
         [string]$PreflightRunId = '',
 
-        [string]$PreflightSummary = ''
+        [string]$PreflightSummary = '',
+
+        [ValidateSet('NDJSON', 'JSON', 'CSV')]
+        [string]$ExportFormat = 'NDJSON'
     )
 
     $candidateArray = @($Candidates)
@@ -333,14 +356,30 @@ function Export-PolicyImpactCsvIfAny {
 
     try {
         Initialize-DirectoryIfNeeded -Path (Split-Path -Path $Path -Parent)
-        $exportRows | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 -WhatIf:$false
+
+        switch ($ExportFormat) {
+            'NDJSON' {
+                $exportRows | ForEach-Object {
+                    ConvertTo-Json -InputObject (ConvertTo-DeserializedRecord -Record $_) -Depth 10 -Compress
+                } | Set-Content -Path $Path -Encoding UTF8 -WhatIf:$false
+            }
+            'JSON' {
+                $deserializedRows = @($exportRows | ForEach-Object { ConvertTo-DeserializedRecord -Record $_ })
+                ConvertTo-Json -InputObject $deserializedRows -Depth 10 |
+                    Set-Content -Path $Path -Encoding UTF8 -WhatIf:$false
+            }
+            'CSV' {
+                $exportRows | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8 -WhatIf:$false
+            }
+        }
+
         Write-Log("${SuccessPrefix}: $Path")
     }
     catch {
-        $exportError = "Failed to export policy impact CSV '$Path': $($_.Exception.Message)"
+        $exportError = "Failed to export policy impact records ($ExportFormat) '$Path': $($_.Exception.Message)"
         Write-Log($exportError)
         Write-Error $exportError -ErrorAction Stop
     }
 }
 
-Export-ModuleMember -Function Initialize-DirectoryIfNeeded, Export-PolicyImpactCsvIfAny
+Export-ModuleMember -Function Initialize-DirectoryIfNeeded, Export-PolicyImpactRecordsIfAny
