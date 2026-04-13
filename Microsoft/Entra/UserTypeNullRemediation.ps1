@@ -25,6 +25,8 @@ param(
     [string]$StrictnessMode = 'Balanced',
     [ValidateRange(0, 2147483647)]
     [int]$TopUsers = 0,
+    [ValidateSet('NDJSON', 'JSON', 'CSV')]
+    [string]$ExportFormat = 'NDJSON',
     [switch]$IncludePolicyImpactNamesInLog,
     [Alias('h')]
     [switch]$Help
@@ -33,7 +35,7 @@ param(
 if ($Help) {
     @"
 Usage:
-    .\UserTypeNullRemediation.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-StrictnessMode Strict|Balanced|Permissive] [-TopUsers <count>] [-IncludePolicyImpactNamesInLog] [-WhatIf] [-Confirm] [-Help|-h]
+    .\UserTypeNullRemediation.ps1 [-TargetType Member|Guest|Both] [-UseCachedGraphResults] [-EnableGuestUpdates] [-StrictnessMode Strict|Balanced|Permissive] [-TopUsers <count>] [-ExportFormat NDJSON|JSON|CSV] [-IncludePolicyImpactNamesInLog] [-WhatIf] [-Confirm] [-Help|-h]
 
 Options:
     -TargetType
@@ -66,6 +68,19 @@ Options:
         In non-preview mode, successfully updated users are pruned from the in-session cache after
         each run. Use -UseCachedGraphResults on subsequent runs to process remaining users.
 
+    -ExportFormat NDJSON|JSON|CSV
+        Controls the file format used for all export files (skipped users, preview candidates,
+        updated users, failed updates).
+        NDJSON (default): one JSON object per line. Immune to newlines, commas, and quotes
+            in Entra field values. Recommended for downstream tooling and log aggregators.
+        JSON: a single JSON array. Immune to the same Entra field value issues and useful
+            when the consumer expects a well-formed JSON document.
+        CSV: legacy flat format. Susceptible to newlines, embedded commas, and quotes in
+            Entra field values such as DisplayName or CompanyName. Use only when required
+            by an existing downstream tool that cannot consume NDJSON or JSON.
+        For NDJSON and JSON output, embedded *Json detail fields are deserialized to real
+        nested objects rather than escaped strings, producing clean machine-readable output.
+
     -IncludePolicyImpactNamesInLog
         Includes per-user policy impact name details in log lines for candidate processing.
         Default behavior keeps logs concise and writes only aggregate count/risk summary.
@@ -82,14 +97,16 @@ Options:
         Show this help text.
 
 Notes:
+        - Export file format is controlled by -ExportFormat (default: NDJSON). Extensions:
+                NDJSON => .ndjson | JSON => .json | CSV => .csv
         - Skipped users are exported only when one or more skipped candidates exist:
-                .\Reports\UserTypeNullRemediation\Reports_Skipped_Users\SkippedUsers-<timestamp>.csv
+                .\Reports\UserTypeNullRemediation\Reports_Skipped_Users\SkippedUsers-<timestamp>.<ext>
         - Preview exports (WhatIf) are written only when matching candidates exist:
-                .\Reports\UserTypeNullRemediation\Reports_Would_Update_Members\WouldUpdateMembers-<timestamp>.csv
-                .\Reports\UserTypeNullRemediation\Reports_Would_Update_Guests\WouldUpdateGuests-<timestamp>.csv
+                .\Reports\UserTypeNullRemediation\Reports_Would_Update_Members\WouldUpdateMembers-<timestamp>.<ext>
+                .\Reports\UserTypeNullRemediation\Reports_Would_Update_Guests\WouldUpdateGuests-<timestamp>.<ext>
         - Non-preview update outcome exports are written only when matching records exist:
-                .\Reports\UserTypeNullRemediation\Reports_Updated_Users\UpdatedUsers-<timestamp>.csv
-                .\Reports\UserTypeNullRemediation\Reports_Failed_Updates\FailedUpdates-<timestamp>.csv
+                .\Reports\UserTypeNullRemediation\Reports_Updated_Users\UpdatedUsers-<timestamp>.<ext>
+                .\Reports\UserTypeNullRemediation\Reports_Failed_Updates\FailedUpdates-<timestamp>.<ext>
         - Preflight artifacts are written to:
                 .\Reports\UserTypeNullRemediation\Reports_Preflight_Preview\Preflight.preview-<timestamp>.json (preview / -WhatIf)
                 .\Reports\UserTypeNullRemediation\Reports_Preflight\Preflight-<timestamp>.json (non-preview)
@@ -172,6 +189,7 @@ Write-Host "=====================================`n" -ForegroundColor Cyan
 Write-Log("Starting UserType processing. TargetType=$TargetType")
 Write-Log("StrictnessMode set to '$StrictnessMode'.")
 Write-Log("TopUsers limit set to: $(if ($TopUsers -gt 0) { $TopUsers } else { 'All matching users' }).")
+Write-Log("ExportFormat set to '$ExportFormat'.")
 Write-Log("Log file path for this run: $Global:LogFilePath")
 
 $policyImpactScopeMatrix = @(Get-PolicyImpactScopeMatrix)
@@ -183,6 +201,11 @@ Write-Log("Graph delegated scopes requested for this run: $($allRequiredScopes -
 
 $runTimestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $preflightRunId = "UserTypePreflight-$runTimestamp"
+$fileExtension = switch ($ExportFormat) {
+    'NDJSON' { '.ndjson' }
+    'JSON'   { '.json' }
+    'CSV'    { '.csv' }
+}
 $reportFolderMap = [ordered]@{
     ReportsRoot = Join-Path $PSScriptRoot 'Reports\UserTypeNullRemediation'
 }
@@ -204,11 +227,11 @@ $preflightPreviewFolder = $reportFolderMap.PreflightPreview
 $preflightFolder = $reportFolderMap.Preflight
 
 $exportFileMap = [ordered]@{
-    Skipped = "SkippedUsers-$runTimestamp.csv"
-    MemberPreview = "WouldUpdateMembers-$runTimestamp.csv"
-    GuestPreview = "WouldUpdateGuests-$runTimestamp.csv"
-    Updated = "UpdatedUsers-$runTimestamp.csv"
-    Failed = "FailedUpdates-$runTimestamp.csv"
+    Skipped = "SkippedUsers-$runTimestamp$fileExtension"
+    MemberPreview = "WouldUpdateMembers-$runTimestamp$fileExtension"
+    GuestPreview = "WouldUpdateGuests-$runTimestamp$fileExtension"
+    Updated = "UpdatedUsers-$runTimestamp$fileExtension"
+    Failed = "FailedUpdates-$runTimestamp$fileExtension"
 }
 
 $skippedExportPath = Join-Path $skippedReviewFolder $exportFileMap.Skipped
@@ -284,7 +307,7 @@ foreach ($directoryPlan in $directoryInitializationPlans) {
 }
 
 if ($WhatIfPreference) {
-    Write-Log("WhatIf mode enabled. Preview CSV exports will be written; no update writes will be attempted.")
+    Write-Log("WhatIf mode enabled. Preview $ExportFormat exports will be written; no update writes will be attempted.")
 }
 
 if (($TargetType -in @('Guest', 'Both')) -and -not $isPreviewMode -and -not $EnableGuestUpdates) {
@@ -586,13 +609,14 @@ $preUpdateExportPlans = @(
 )
 
 foreach ($exportPlan in @($preUpdateExportPlans | Where-Object { $_.Enabled })) {
-    Export-PolicyImpactCsvIfAny -Candidates $exportPlan.Candidates `
-                                -Path $exportPlan.Path `
-                                -ProposedUserType $exportPlan.ProposedUserType `
-                                -SuccessPrefix $exportPlan.SuccessPrefix `
-                                -EmptyMessage $exportPlan.EmptyMessage `
-                                -PreflightRunId $preflightRunId `
-                                -PreflightSummary $preflightSummary
+    Export-PolicyImpactRecordsIfAny -Candidates $exportPlan.Candidates `
+                                    -Path $exportPlan.Path `
+                                    -ProposedUserType $exportPlan.ProposedUserType `
+                                    -SuccessPrefix $exportPlan.SuccessPrefix `
+                                    -EmptyMessage $exportPlan.EmptyMessage `
+                                    -PreflightRunId $preflightRunId `
+                                    -PreflightSummary $preflightSummary `
+                                    -ExportFormat $ExportFormat
 }
 
 if ($isPreviewMode) {
@@ -699,13 +723,14 @@ $postUpdateExportPlans = @(
 )
 
 foreach ($exportPlan in @($postUpdateExportPlans | Where-Object { $_.Enabled })) {
-    Export-PolicyImpactCsvIfAny -Candidates $exportPlan.Candidates `
-                                -Path $exportPlan.Path `
-                                -ProposedUserType $exportPlan.ProposedUserType `
-                                -SuccessPrefix $exportPlan.SuccessPrefix `
-                                -EmptyMessage $exportPlan.EmptyMessage `
-                                -PreflightRunId $preflightRunId `
-                                -PreflightSummary $preflightSummary
+    Export-PolicyImpactRecordsIfAny -Candidates $exportPlan.Candidates `
+                                    -Path $exportPlan.Path `
+                                    -ProposedUserType $exportPlan.ProposedUserType `
+                                    -SuccessPrefix $exportPlan.SuccessPrefix `
+                                    -EmptyMessage $exportPlan.EmptyMessage `
+                                    -PreflightRunId $preflightRunId `
+                                    -PreflightSummary $preflightSummary `
+                                    -ExportFormat $ExportFormat
 }
 
 # Prune successfully updated users from the in-session cache so that subsequent runs

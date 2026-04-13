@@ -8,7 +8,7 @@ This folder contains Entra-focused automation scripts and supporting modules.
 
 ## What This Script Does
 
-`UserTypeNullRemediation.ps1` finds users with a null `userType`, classifies them with high confidence as `Member` or `Guest`, exports audit/review CSVs, and updates `userType` based on selected target mode.
+`UserTypeNullRemediation.ps1` finds users with a null `userType`, classifies them with high confidence as `Member` or `Guest`, exports audit/review files, and updates `userType` based on selected target mode.
 
 The script supports preview execution (`-WhatIf`), strictness-based preflight policy checks, and can reuse cached Graph query results from the current PowerShell session.
 
@@ -75,7 +75,7 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 - `Modules/UserTypeNullRemediation/PolicyImpactValidation.psm1`
 - `../Common/Modules/Shared/Logging.psm1`
 
-`PolicyImpactExport.psm1` owns the policy-impact CSV contract for this workflow: row shaping, export directory preparation, and CSV writing. It remains feature-specific by design because the exported schema includes remediation-specific preflight metadata, classification output, and policy-impact counters.
+`PolicyImpactExport.psm1` owns the export contract for this workflow: record shaping, export directory preparation, and file writing in NDJSON, JSON, or CSV format. It remains feature-specific by design because the exported schema includes remediation-specific preflight metadata, classification output, and policy-impact counters.
 
 ## Parameters
 
@@ -101,12 +101,19 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
   - `Strict`: critical failures block writes, and advisory findings with `Unavailable` status also block writes.
   - `Balanced` (default): only critical failures block writes.
   - `Permissive`: allows write mode to continue when only EntitlementManagement checks are unavailable.
-  - `Permissive` still records partial policy coverage in log/CSV outputs and blocks on other critical failures.
+  - `Permissive` still records partial policy coverage in log/export outputs and blocks on other critical failures.
 
 - `-TopUsers <count>`
   - Limits classification, policy evaluation, and update/preview processing to the first `N` users from the set where `userType` is null.
   - Default: `0` (process all matching users).
   - In non-preview mode, successfully updated users are pruned from the in-session cache after each run. Use `-UseCachedGraphResults` on subsequent runs to process the remaining users without re-querying Graph.
+
+- `-ExportFormat NDJSON|JSON|CSV`
+  - Controls the file format for all export files (skipped users, preview candidates, updated users, failed updates).
+  - `NDJSON` (default): one JSON object per line. Immune to newlines, embedded commas, and quotes in Entra field values (e.g. `DisplayName`, `CompanyName`). Recommended for downstream tooling and log aggregators.
+  - `JSON`: a single JSON array. Immune to the same Entra field value issues; useful when the consumer expects a well-formed JSON document.
+  - `CSV`: legacy flat format. Susceptible to newlines, embedded commas, and quotes in Entra field values. Use only when required by an existing downstream tool that cannot consume NDJSON or JSON.
+  - For `NDJSON` and `JSON` output, embedded `*Json` detail fields are deserialized to real nested objects rather than escaped strings, producing clean machine-readable output.
 
 - `-IncludePolicyImpactNamesInLog`
   - Adds per-user policy impact name details to processing log lines.
@@ -114,8 +121,8 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 
 - `-WhatIf`
   - Preview mode. No update writes are attempted.
-  - Writes preview CSV exports and preflight artifacts for review.
-  - Suppresses per-item `ShouldProcess` WhatIf console output for large runs; use preview CSVs for detailed review.
+  - Writes preview export files and preflight artifacts for review.
+  - Suppresses per-item `ShouldProcess` WhatIf console output for large runs; use preview export files for detailed review.
 
 - `-Confirm`
   - Prompts before each update operation.
@@ -125,16 +132,18 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 
 ## Outputs
 
-- Skipped users CSV (created only when there are skipped candidates):
-  - `Reports/UserTypeNullRemediation/Reports_Skipped_Users/SkippedUsers-<timestamp>.csv`
+Export file format is controlled by `-ExportFormat` (default: `NDJSON`). The file extension matches the chosen format: `.ndjson`, `.json`, or `.csv`. NDJSON and JSON are recommended — they are immune to newlines, embedded commas, and quotes that can appear in Entra field values such as `DisplayName` or `CompanyName`.
 
-- Preview candidate CSVs (only in `-WhatIf`, and only when that candidate set is non-empty):
-  - `Reports/UserTypeNullRemediation/Reports_Would_Update_Members/WouldUpdateMembers-<timestamp>.csv`
-  - `Reports/UserTypeNullRemediation/Reports_Would_Update_Guests/WouldUpdateGuests-<timestamp>.csv`
+- Skipped users export (created only when there are skipped candidates):
+  - `Reports/UserTypeNullRemediation/Reports_Skipped_Users/SkippedUsers-<timestamp>.<ext>`
 
-- Non-preview update outcome CSVs (only when that result set is non-empty):
-  - `Reports/UserTypeNullRemediation/Reports_Updated_Users/UpdatedUsers-<timestamp>.csv`
-  - `Reports/UserTypeNullRemediation/Reports_Failed_Updates/FailedUpdates-<timestamp>.csv`
+- Preview candidate exports (only in `-WhatIf`, and only when that candidate set is non-empty):
+  - `Reports/UserTypeNullRemediation/Reports_Would_Update_Members/WouldUpdateMembers-<timestamp>.<ext>`
+  - `Reports/UserTypeNullRemediation/Reports_Would_Update_Guests/WouldUpdateGuests-<timestamp>.<ext>`
+
+- Non-preview update outcome exports (only when that result set is non-empty):
+  - `Reports/UserTypeNullRemediation/Reports_Updated_Users/UpdatedUsers-<timestamp>.<ext>`
+  - `Reports/UserTypeNullRemediation/Reports_Failed_Updates/FailedUpdates-<timestamp>.<ext>`
 
 - Preflight artifact:
   - Preview runs (`-WhatIf`): `Reports/UserTypeNullRemediation/Reports_Preflight_Preview/Preflight.preview-<timestamp>.json`
@@ -151,17 +160,18 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
   - The console keeps `Write-Progress` output readable by avoiding per-user console spam.
   - Detailed per-user activity is written to the log file instead.
 
-- Exported CSV impact metadata:
+- Exported record fields:
   - `PreflightRunId`, `PreflightSummary`, `PolicyCoverageLevel`, `PolicyRiskLevel`
   - Impact counters for Conditional Access, dynamic groups, memberships, app roles, directory roles, entitlement assignments, licensing directional impacts, Teams, and mailbox presence
-  - Impact detail text columns for names (semicolon-delimited) and JSON detail columns for machine parsing:
+  - Impact detail text fields for names (semicolon-delimited) and `*Json` detail fields for machine parsing:
     `ConditionalAccessPolicyNames`, `ConditionalAccessDirections`, `ConditionalAccessPolicyTransitions`, `ConditionalAccessPolicyDetailsJson`, `DynamicGroupNames`, `DynamicGroupImpactDirections`, `DynamicGroupImpactDetailsJson`,
     `GroupMembershipNames`, `GroupMembershipDetailsJson`, `AppRoleAssignmentNames`, `AppRoleAssignmentDetailsJson`,
     `DirectoryRoleNames`, `DirectoryRoleDetailsJson`, `EntitlementPackageNames`, `EntitlementPackageDetailsJson`,
     `LicensingImpactDirections`, `LicensingImpactNames`, `LicensingAssignedNames`, `LicensingImpactDetailsJson`
+  - In NDJSON and JSON output, `*Json` fields contain real nested objects. In CSV output they are escaped JSON strings.
   - `BlockingFlags` and computed `PolicyImpactNotes`
 
-- Exported CSV column groups:
+- Exported record field groups:
   - Run metadata: `TimestampUtc`, `PreflightRunId`, `PreflightSummary`
   - User identity: `UserPrincipalName`, `DisplayName`, `Id`, `JobTitle`, `CompanyName`, `Department`, `OfficeLocation`
   - Account state: `AccountEnabled`, `CreatedDateTime`, `CreationType`, `ExternalUserState`
@@ -210,6 +220,18 @@ The script is orchestrated from the main `.ps1` file and uses helper modules for
 
 ```powershell
 .\UserTypeNullRemediation.ps1 -TopUsers 25 -WhatIf
+```
+
+### 7) Export results as a JSON array instead of NDJSON
+
+```powershell
+.\UserTypeNullRemediation.ps1 -ExportFormat JSON -WhatIf
+```
+
+### 8) Export results as CSV (legacy; not recommended for Entra data)
+
+```powershell
+.\UserTypeNullRemediation.ps1 -ExportFormat CSV -WhatIf
 ```
 
 ### 7) Incremental same-session production batching
