@@ -414,3 +414,6 @@ FodyWeavers.xsd
 
 # Generated Entra remediation artifacts
 Microsoft/Entra/Reports/
+
+# Generated Active Directory and Entra ID User Account files
+Microsoft/Entra/AD-Entra_AccountGovernance/Output/
