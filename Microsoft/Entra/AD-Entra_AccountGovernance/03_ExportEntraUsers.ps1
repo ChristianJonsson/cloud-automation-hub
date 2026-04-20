@@ -3,7 +3,7 @@
 # Purpose : Fetch all Entra users once, split into three audit buckets,
 #           export as NDJSON (safe against newlines/special chars in values)
 # Run on  : Any machine with Microsoft.Graph PowerShell module
-# Output  : <OutputPath>\Entra_*.ndjson
+# Output  : <RunOutputPath>\Entra_*.ndjson
 # Requires: 00_Config.ps1 (shared configuration)
 #
 # Why NDJSON: User properties can contain newline characters and other special
@@ -17,22 +17,30 @@
 
 . "$PSScriptRoot\00_Config.ps1"
 
-# --- Module check -------------------------------------------------------------
-if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Users)) {
-    Write-Error @"
-The Microsoft.Graph PowerShell module is not installed. Install it and re-run.
+# --- Module imports -----------------------------------------------------------
+$loggingModulePath   = Join-Path $PSScriptRoot '..\..\Common\Modules\Shared\Logging.psm1'
+$graphConnModulePath = Join-Path $PSScriptRoot '..\Modules\Shared\GraphConnection.psm1'
+$graphDataModulePath = Join-Path $PSScriptRoot '..\Modules\Shared\GraphData.psm1'
 
-  Install-Module Microsoft.Graph -Scope CurrentUser
+Import-Module $loggingModulePath   -Force -ErrorAction Stop
+Import-Module $graphConnModulePath -Force -ErrorAction Stop
+Import-Module $graphDataModulePath -Force -ErrorAction Stop
 
-If already installed but not found, ensure the install scope matches the session:
-  Install-Module Microsoft.Graph -Scope AllUsers
-"@
-    exit 1
+# --- Run output directory -----------------------------------------------------
+# When called from Run-AccountGovernanceAudit.ps1, $RunOutputPath is already set
+# in the caller's scope and is reused here. For standalone runs a new timestamped
+# directory is created so each run's output is preserved independently.
+if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
+    $RunOutputPath = Join-Path $OutputPath (Get-Date -Format 'yyyy-MM-dd_HHmmss')
+    New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
 }
+Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
+Write-Log "=== 03_ExportEntraUsers started (ImmutableIdMethod: $ImmutableIdMethod) ==="
 
-Import-Module Microsoft.Graph.Users -ErrorAction Stop
-
-Connect-MgGraph -Scopes "User.Read.All", "Directory.Read.All"
+# --- Connect to Microsoft Graph -----------------------------------------------
+Connect-MgGraphWithRequirements `
+    -GraphModuleNames @('Microsoft.Graph.Users') `
+    -RequiredScopes @('User.Read.All', 'Directory.Read.All')
 
 # --- Property list ------------------------------------------------------------
 $properties = @(
@@ -54,23 +62,10 @@ $properties = @(
 ) -join ","
 
 # --- Flatten function ---------------------------------------------------------
-# Handles nested/array objects:
-#   AssignedLicenses, AssignedPlans, OnPremisesProvisioningErrors,
-#   OnPremisesExtensionAttributes, OtherMails, ProxyAddresses, Identities
+# Multi-value fields are kept as JSON arrays (not semicolon-joined strings) to
+# preserve structure and avoid data corruption when values contain semicolons.
 function Flatten-User ($user, [string]$BucketLabel = $null) {
-    $extAttribs     = $user.OnPremisesExtensionAttributes
-    $licenses       = ($user.AssignedLicenses | ForEach-Object { $_.SkuId }) -join ";"
-    $provErrors     = ($user.OnPremisesProvisioningErrors | ForEach-Object {
-        "$($_.Category):$($_.OccurredDateTime):$($_.PropertyCausingError):$($_.Value)"
-    }) -join ";"
-    $otherMails     = ($user.OtherMails) -join ";"
-    $proxyAddresses = ($user.ProxyAddresses) -join ";"
-    $identities     = ($user.Identities | ForEach-Object {
-        "$($_.SignInType):$($_.Issuer):$($_.IssuerAssignedId)"
-    }) -join ";"
-    $assignedPlans  = ($user.AssignedPlans | ForEach-Object {
-        "$($_.Service):$($_.ServicePlanId):$($_.CapabilityStatus)"
-    }) -join ";"
+    $extAttribs = $user.OnPremisesExtensionAttributes
 
     [PSCustomObject]@{
         Bucket                              = $BucketLabel
@@ -78,14 +73,18 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
         # Core identity
         Id                                  = $user.Id
         DisplayName                         = $user.DisplayName
-        #GivenName                           = $user.GivenName
-        #Surname                             = $user.Surname
         UserPrincipalName                   = $user.UserPrincipalName
         Mail                                = $user.Mail
         MailNickname                        = $user.MailNickname
-        OtherMails                          = $otherMails
-        ProxyAddresses                      = $proxyAddresses
-        Identities                          = $identities
+        OtherMails                          = @($user.OtherMails)
+        ProxyAddresses                      = @($user.ProxyAddresses)
+        Identities                          = @($user.Identities | ForEach-Object {
+                                                [PSCustomObject]@{
+                                                    SignInType       = $_.SignInType
+                                                    Issuer          = $_.Issuer
+                                                    IssuerAssignedId = $_.IssuerAssignedId
+                                                }
+                                              })
         UserType                            = $user.UserType
 
         # Account state
@@ -111,8 +110,14 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
 
         # Licensing
         UsageLocation                       = $user.UsageLocation
-        AssignedLicenses                    = $licenses
-        AssignedPlans                       = $assignedPlans
+        AssignedLicenses                    = @($user.AssignedLicenses | ForEach-Object { $_.SkuId })
+        AssignedPlans                       = @($user.AssignedPlans | ForEach-Object {
+                                                [PSCustomObject]@{
+                                                    Service         = $_.Service
+                                                    ServicePlanId   = $_.ServicePlanId
+                                                    CapabilityStatus = $_.CapabilityStatus
+                                                }
+                                              })
 
         # On-premises sync
         OnPremisesSyncEnabled               = $user.OnPremisesSyncEnabled
@@ -122,7 +127,14 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
         OnPremisesSamAccountName            = $user.OnPremisesSamAccountName
         OnPremisesImmutableId               = $user.OnPremisesImmutableId
         OnPremisesSecurityIdentifier        = $user.OnPremisesSecurityIdentifier
-        OnPremisesProvisioningErrors        = $provErrors
+        OnPremisesProvisioningErrors        = @($user.OnPremisesProvisioningErrors | ForEach-Object {
+                                                [PSCustomObject]@{
+                                                    Category              = $_.Category
+                                                    OccurredDateTime      = $_.OccurredDateTime
+                                                    PropertyCausingError  = $_.PropertyCausingError
+                                                    Value                 = $_.Value
+                                                }
+                                              })
 
         # Extension attributes (flattened from nested object)
         ExtensionAttribute1                 = $extAttribs.ExtensionAttribute1
@@ -145,57 +157,59 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
 
 # --- Single fetch (run once, filter in memory) --------------------------------
 # In large tenants this fetch can take 20-35 minutes - do not run multiple times
-Write-Host "Fetching all users from Entra (may take 20+ minutes in large tenants)..." -ForegroundColor Yellow
+Write-Log "Fetching all users from Entra (may take 20+ minutes in large tenants)..."
 $startTime = Get-Date
 
-$allUsers = Get-MgUser -All -Property $properties
+$allUsers = Invoke-GraphOperationWithRetry -OperationName 'Get-MgUser full tenant listing' -Operation {
+    Get-MgUser -All -Property $properties -ErrorAction Stop
+}
 
 $elapsed = (Get-Date) - $startTime
-Write-Host "Fetch complete: $($allUsers.Count) total users in $([int]$elapsed.TotalMinutes) minutes" -ForegroundColor Green
+Write-Log "Fetch complete: $($allUsers.Count) total users in $([int]$elapsed.TotalMinutes) minutes"
 
 # --- Bucket 1: Actively synced ------------------------------------------------
-Write-Host "`nProcessing Bucket 1 - Actively synced..." -ForegroundColor Cyan
+Write-Log "Processing Bucket 1 - Actively synced..."
 $synced = $allUsers | Where-Object { $_.OnPremisesSyncEnabled -eq $true }
-Write-Host "  Count: $($synced.Count)"
-$synced | ForEach-Object { Flatten-User $_ "ActivelySynced" | ConvertTo-Json -Compress } |
-    Out-File "${OutputPath}Entra_SyncedUsers.ndjson" -Encoding UTF8
-Write-Host "  Written -> ${OutputPath}Entra_SyncedUsers.ndjson" -ForegroundColor Green
+Write-Log "  Count: $($synced.Count)"
+$synced | ForEach-Object { Flatten-User $_ "ActivelySynced" | ConvertTo-Json -Compress -Depth 5 } |
+    Out-File (Join-Path $RunOutputPath 'Entra_SyncedUsers.ndjson') -Encoding UTF8
+Write-Log "  Written -> Entra_SyncedUsers.ndjson"
 
 # --- Bucket 2: Previously synced ----------------------------------------------
-Write-Host "`nProcessing Bucket 2 - Previously synced..." -ForegroundColor Cyan
+Write-Log "Processing Bucket 2 - Previously synced..."
 $prevSynced = $allUsers | Where-Object {
     $_.OnPremisesSyncEnabled -ne $true -and $_.OnPremisesImmutableId -ne $null
 }
-Write-Host "  Count: $($prevSynced.Count)"
-$prevSynced | ForEach-Object { Flatten-User $_ "PreviouslySynced" | ConvertTo-Json -Compress } |
-    Out-File "${OutputPath}Entra_PreviouslySynced.ndjson" -Encoding UTF8
-Write-Host "  Written -> ${OutputPath}Entra_PreviouslySynced.ndjson" -ForegroundColor Green
+Write-Log "  Count: $($prevSynced.Count)"
+$prevSynced | ForEach-Object { Flatten-User $_ "PreviouslySynced" | ConvertTo-Json -Compress -Depth 5 } |
+    Out-File (Join-Path $RunOutputPath 'Entra_PreviouslySynced.ndjson') -Encoding UTF8
+Write-Log "  Written -> Entra_PreviouslySynced.ndjson"
 
 # --- Bucket 3: Cloud only -----------------------------------------------------
-Write-Host "`nProcessing Bucket 3 - Cloud only..." -ForegroundColor Cyan
+Write-Log "Processing Bucket 3 - Cloud only..."
 $cloudOnly = $allUsers | Where-Object {
     $_.OnPremisesSyncEnabled -ne $true -and $_.OnPremisesImmutableId -eq $null
 }
-Write-Host "  Count: $($cloudOnly.Count)"
-$cloudOnly | ForEach-Object { Flatten-User $_ "CloudOnly" | ConvertTo-Json -Compress } |
-    Out-File "${OutputPath}Entra_CloudOnly.ndjson" -Encoding UTF8
-Write-Host "  Written -> ${OutputPath}Entra_CloudOnly.ndjson" -ForegroundColor Green
+Write-Log "  Count: $($cloudOnly.Count)"
+$cloudOnly | ForEach-Object { Flatten-User $_ "CloudOnly" | ConvertTo-Json -Compress -Depth 5 } |
+    Out-File (Join-Path $RunOutputPath 'Entra_CloudOnly.ndjson') -Encoding UTF8
+Write-Log "  Written -> Entra_CloudOnly.ndjson"
 
 # --- All users (combined) -----------------------------------------------------
 # Concatenate the three bucket files — no re-processing, Bucket field identifies origin
-Write-Host "`nWriting combined export..." -ForegroundColor Cyan
-Get-Content "${OutputPath}Entra_SyncedUsers.ndjson",
-            "${OutputPath}Entra_PreviouslySynced.ndjson",
-            "${OutputPath}Entra_CloudOnly.ndjson" |
-    Out-File "${OutputPath}Entra_AllUsers.ndjson" -Encoding UTF8
-Write-Host "  Written -> ${OutputPath}Entra_AllUsers.ndjson" -ForegroundColor Green
+Write-Log "Writing combined export..."
+Get-Content (Join-Path $RunOutputPath 'Entra_SyncedUsers.ndjson'),
+            (Join-Path $RunOutputPath 'Entra_PreviouslySynced.ndjson'),
+            (Join-Path $RunOutputPath 'Entra_CloudOnly.ndjson') |
+    Out-File (Join-Path $RunOutputPath 'Entra_AllUsers.ndjson') -Encoding UTF8
+Write-Log "  Written -> Entra_AllUsers.ndjson"
 
 # --- Summary ------------------------------------------------------------------
-Write-Host "`n=== SUMMARY ===" -ForegroundColor Yellow
-Write-Host "Total users in Entra  : $($allUsers.Count)"
-Write-Host "Bucket 1 - Synced     : $($synced.Count)"
-Write-Host "Bucket 2 - Prev synced: $($prevSynced.Count)"
-Write-Host "Bucket 3 - Cloud only : $($cloudOnly.Count)"
 $check = $synced.Count + $prevSynced.Count + $cloudOnly.Count
-Write-Host "Bucket total          : $check (should equal total above)"
-Write-Host "Combined file         : ${OutputPath}Entra_AllUsers.ndjson (Bucket field identifies origin)"
+Write-Log "=== 03_ExportEntraUsers complete ==="
+Write-Log "  Total users in Entra  : $($allUsers.Count)"
+Write-Log "  Bucket 1 - Synced     : $($synced.Count)"
+Write-Log "  Bucket 2 - Prev synced: $($prevSynced.Count)"
+Write-Log "  Bucket 3 - Cloud only : $($cloudOnly.Count)"
+Write-Log "  Bucket total          : $check (should equal total above)"
+Write-Log "  Output directory      : $RunOutputPath"

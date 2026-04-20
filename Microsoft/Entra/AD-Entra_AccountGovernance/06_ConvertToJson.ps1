@@ -4,7 +4,7 @@
 #           Excel (Get Data -> JSON / Power Query) and other JSON-strict tools
 # Run on  : Any machine with access to the output files
 # Requires: 00_Config.ps1 (shared configuration)
-#           One or more *.ndjson files in $OutputPath (run scripts 03-05 first)
+#           One or more *.ndjson files in $RunOutputPath (run scripts 03-05 first)
 #
 # Why this exists:
 #   NDJSON (one JSON object per line) is the transitive format used by the
@@ -20,17 +20,35 @@
 
 . "$PSScriptRoot\00_Config.ps1"
 
+# --- Module imports -----------------------------------------------------------
+$loggingModulePath = Join-Path $PSScriptRoot '..\..\Common\Modules\Shared\Logging.psm1'
+Import-Module $loggingModulePath -Force -ErrorAction Stop
+
+# --- Run output directory -----------------------------------------------------
+if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
+    # Standalone: use the most recent timestamped run directory
+    $latestRun = Get-ChildItem -Path $OutputPath -Directory -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending | Select-Object -First 1
+    if ($null -eq $latestRun) {
+        throw "No timestamped run directories found in '$OutputPath'. Run scripts 03-05 first."
+    }
+    $RunOutputPath = $latestRun.FullName
+    Write-Warning "No RunOutputPath set; using most recent run: $RunOutputPath"
+}
+Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
+Write-Log "=== 06_ConvertToJson started ==="
+
 # --- Find source files --------------------------------------------------------
-$ndjsonFiles = Get-ChildItem -Path $OutputPath -Filter "*.ndjson" -ErrorAction SilentlyContinue |
+$ndjsonFiles = Get-ChildItem -Path $RunOutputPath -Filter "*.ndjson" -ErrorAction SilentlyContinue |
     Sort-Object Name
 
 if ($null -eq $ndjsonFiles -or $ndjsonFiles.Count -eq 0) {
-    Write-Warning "No .ndjson files found in '$OutputPath'. Run scripts 03-05 first."
+    Write-Log "WARNING: No .ndjson files found in '$RunOutputPath'. Run scripts 03-05 first."
+    Write-Warning "No .ndjson files found in '$RunOutputPath'. Run scripts 03-05 first."
     exit 0
 }
 
-Write-Host "Found $($ndjsonFiles.Count) NDJSON file(s) in $OutputPath" -ForegroundColor Cyan
-Write-Host "Converting to JSON arrays (UTF-8, no BOM)...`n" -ForegroundColor Cyan
+Write-Log "Found $($ndjsonFiles.Count) NDJSON file(s) in $RunOutputPath. Converting to JSON arrays..."
 
 # UTF-8 without BOM — Windows PowerShell's default Out-File adds a BOM that
 # Excel's Power Query JSON connector rejects
@@ -69,11 +87,11 @@ foreach ($file in $ndjsonFiles) {
         $writer.WriteLine("]")
 
         $status = if ($recordCount -eq 0) { "(empty)" } else { "$recordCount records" }
-        $color  = if ($recordCount -eq 0) { "DarkGray" } else { "Green" }
-        Write-Host ("  {0,-45} -> {1} ({2})" -f $file.Name, [System.IO.Path]::GetFileName($jsonPath), $status) -ForegroundColor $color
+        Write-Log ("  {0,-45} -> {1} ({2})" -f $file.Name, [System.IO.Path]::GetFileName($jsonPath), $status)
         $converted++
     }
     catch {
+        Write-Log "  WARNING: Failed to convert $($file.Name): $_"
         Write-Warning "  Failed to convert $($file.Name): $_"
         $skipped++
     }
@@ -82,4 +100,4 @@ foreach ($file in $ndjsonFiles) {
     }
 }
 
-Write-Host "`nDone — $converted file(s) converted, $skipped skipped." -ForegroundColor Yellow
+Write-Log "=== 06_ConvertToJson complete — $converted file(s) converted, $skipped skipped ==="

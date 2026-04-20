@@ -2,9 +2,8 @@
 # 04_ExportADUsers.ps1
 # Purpose : Export all AD user accounts for cross-reference against Entra buckets
 # Run on  : Domain-joined machine with RSAT AD module
-# Output  : <OutputPath>\AD_AllUsers.ndjson
+# Output  : <RunOutputPath>\AD_AllUsers_<ForestName>.ndjson
 # Requires: 00_Config.ps1 (shared configuration)
-# Status  : TODO - not yet completed
 #
 # Approach:
 #   1. Export all AD users with key properties
@@ -16,10 +15,28 @@
 #      OnPremisesImmutableId
 # ==============================================================================
 
+param(
+    [string]$ForestName = "default",
+    [string]$Server     = $null      # Optional: target a specific DC for this forest
+)
+
 . "$PSScriptRoot\00_Config.ps1"
+
+# --- Module imports -----------------------------------------------------------
+$loggingModulePath = Join-Path $PSScriptRoot '..\..\Common\Modules\Shared\Logging.psm1'
+Import-Module $loggingModulePath -Force -ErrorAction Stop
+
+# --- Run output directory -----------------------------------------------------
+if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
+    $RunOutputPath = Join-Path $OutputPath (Get-Date -Format 'yyyy-MM-dd_HHmmss')
+    New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
+}
+Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
+Write-Log "=== 04_ExportADUsers started (ForestName: $ForestName, ImmutableIdMethod: $ImmutableIdMethod) ==="
 
 # --- Module check -------------------------------------------------------------
 if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
+    Write-Log "ERROR: ActiveDirectory PowerShell module is not installed."
     Write-Error @"
 The ActiveDirectory PowerShell module is not installed. Install it and re-run.
 
@@ -134,16 +151,26 @@ if ($AdditionalAdProperties.Count -gt 0) {
     $adProperties += $AdditionalAdProperties
 }
 
-Write-Host "Fetching all AD users (ImmutableIdMethod: $ImmutableIdMethod)..." -ForegroundColor Cyan
+Write-Log "Fetching all AD users (ImmutableIdMethod: $ImmutableIdMethod)..."
+
+$getAdUserParams = @{
+    Filter     = '*'
+    Properties = $adProperties
+    ErrorAction = 'Stop'
+}
+if ($Server) { $getAdUserParams['Server'] = $Server }
 
 try {
-    $adUsers = Get-ADUser -Filter * -Properties $adProperties -ErrorAction Stop
+    $adUsers = Get-ADUser @getAdUserParams
 } catch {
+    Write-Log "ERROR: Failed to query Active Directory: $_"
     Write-Error "Failed to query Active Directory: $_`n`nEnsure this machine is domain-joined and can reach a domain controller (AD Web Services must be running)."
     exit 1
 }
 
-Write-Host "Fetched $($adUsers.Count) AD users. Processing..." -ForegroundColor Cyan
+Write-Log "Fetched $($adUsers.Count) AD users. Processing..."
+
+$outputFile = Join-Path $RunOutputPath "AD_AllUsers_${ForestName}.ndjson"
 
 $adUsers | ForEach-Object {
     # Resolve ObjectGUID once — depending on AD module version, ObjectGUID is
@@ -173,10 +200,6 @@ $adUsers | ForEach-Object {
             } else { $null }
         }
     }
-
-    # Flatten array properties
-    $spns           = ($_.ServicePrincipalNames) -join ";"
-    $proxyAddresses = ($_.proxyAddresses) -join ";"
 
     # Build record as ordered hashtable to allow dynamic additional properties
     $record = [ordered]@{
@@ -210,7 +233,7 @@ $adUsers | ForEach-Object {
 
         # Security / delegation flags
         adminCount                      = $_.adminCount
-        ServicePrincipalNames           = $spns
+        ServicePrincipalNames           = @($_.ServicePrincipalNames)
         DoesNotRequirePreAuth           = $_.DoesNotRequirePreAuth
         TrustedForDelegation            = $_.TrustedForDelegation
         TrustedToAuthForDelegation      = $_.TrustedToAuthForDelegation
@@ -224,7 +247,7 @@ $adUsers | ForEach-Object {
         # Contact
         Mail                            = $_.Mail
         MobilePhone                     = $_.MobilePhone
-        ProxyAddresses                  = $proxyAddresses
+        ProxyAddresses                  = @($_.proxyAddresses)
 
         # Extension attributes (AD standard, 1-15)
         ExtensionAttribute1             = $_.extensionAttribute1
@@ -273,7 +296,8 @@ $adUsers | ForEach-Object {
 
     [PSCustomObject]$record
 
-} | ForEach-Object { $_ | ConvertTo-Json -Compress } |
-    Out-File "${OutputPath}AD_AllUsers.ndjson" -Encoding UTF8
+} | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 } |
+    Out-File $outputFile -Encoding UTF8
 
-Write-Host "Written -> ${OutputPath}AD_AllUsers.ndjson ($($adUsers.Count) users)" -ForegroundColor Green
+Write-Log "=== 04_ExportADUsers complete ==="
+Write-Log "  Written -> AD_AllUsers_${ForestName}.ndjson ($($adUsers.Count) users)"
