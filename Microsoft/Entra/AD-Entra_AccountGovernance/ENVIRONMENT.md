@@ -13,7 +13,8 @@ Run `01_EntraConnect_Config.ps1` and `02_SyncRules.ps1` to retrieve these values
 
 | Setting | Where to find it | `00_Config.ps1` variable |
 |---------|-----------------|--------------------------|
-| Output path | Your preference (default: `C:\tmp\`) | `$OutputPath` |
+| Output path | Defaults to `Output\` next to the scripts; override to write elsewhere | `$OutputPath` |
+| AD forests in scope | `Get-ADSyncConnector \| Where ConnectorTypeName -eq "AD" \| Select Name` | `$Forests` |
 | Source anchor method | `Get-ADSyncGlobalSettings` — `SourceAnchor` field; or ADUC Attribute Editor on a synced user | `$ImmutableIdMethod` |
 | Custom ImmutableId attribute | Only if source anchor is a custom AD attribute | `$CustomImmutableIdAttribute` |
 | AD connector type name | `Get-ADSyncConnector \| Select ConnectorTypeName` (standard: `"AD"`) | `$ADConnectorTypeName` |

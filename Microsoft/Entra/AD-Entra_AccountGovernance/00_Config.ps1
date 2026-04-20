@@ -6,8 +6,8 @@
 #           See ENVIRONMENT.md for a per-setting reference and worked example.
 # ==============================================================================
 
-# Output directory for all exported files (include trailing backslash)
-$OutputPath = ".\Output\"
+# Output directory for all exported files (resolved relative to this config file)
+$OutputPath = Join-Path $PSScriptRoot 'Output'
 
 if (-not (Test-Path $OutputPath)) {
     New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
@@ -50,3 +50,36 @@ $KeySyncRuleNames = @(
 $AdditionalAdProperties = @(
     # "employeeNumber"
 )
+
+# --- Multi-forest configuration -----------------------------------------------
+# List each AD forest name that should be included in the audit. The name is
+# used as a suffix on the AD export file (AD_AllUsers_<ForestName>.ndjson) and
+# as a sub-directory label in run manifests. Single-forest environments use the
+# default entry. For multiple forests run 04_ExportADUsers.ps1 once per forest
+# (the orchestrator does this automatically).
+# Example: $Forests = @("corp.local", "subsidiary.com")
+$Forests = @("default")
+
+# --- Config validation --------------------------------------------------------
+# Called by the orchestrator before any script runs. Can also be called manually
+# to validate the configuration before a standalone run.
+function Assert-GovernanceConfig {
+    $validMethods = @("ObjectGUID", "mS-DS-ConsistencyGuid", "Custom")
+    if ($ImmutableIdMethod -notin $validMethods) {
+        throw "Invalid ImmutableIdMethod '$ImmutableIdMethod'. Must be one of: $($validMethods -join ', ')"
+    }
+
+    if ($ImmutableIdMethod -eq "Custom" -and [string]::IsNullOrWhiteSpace($CustomImmutableIdAttribute)) {
+        throw "ImmutableIdMethod is 'Custom' but CustomImmutableIdAttribute is not set."
+    }
+
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        throw "OutputPath is empty. Set a valid output directory in 00_Config.ps1."
+    }
+
+    try {
+        New-Item -ItemType Directory -Path $OutputPath -Force -ErrorAction Stop | Out-Null
+    } catch {
+        throw "OutputPath '$OutputPath' is not writable: $_"
+    }
+}

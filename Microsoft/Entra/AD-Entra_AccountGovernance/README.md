@@ -29,11 +29,32 @@ A fourth bucket — **AD-only** — is identified from the AD side and cross-ref
 
 - Access to the **Entra Connect server** (for sync configuration queries — scripts 01 and 02)
 - **Active Directory Users and Computers** or PowerShell with RSAT AD module
-- **Microsoft Graph PowerShell module** installed and connected:
-  ```powershell
-  Connect-MgGraph -Scopes "User.Read.All", "Directory.Read.All"
-  ```
-- Output directory configured in `00_Config.ps1` (default: `C:\tmp\`)
+- **Microsoft Graph PowerShell module** — installed automatically by the scripts if missing
+- Output directory defaults to an `Output\` folder next to the scripts (configurable in `00_Config.ps1`)
+
+---
+
+## Quick Start — Orchestrated Run
+
+The recommended way to run a complete audit:
+
+```powershell
+# Single-forest environments
+.\Run-AccountGovernanceAudit.ps1
+
+# Multi-forest — export a specific forest only
+.\Run-AccountGovernanceAudit.ps1 -Forest "corp.local"
+
+# Skip Entra export (reuse prior run's Entra NDJSON files)
+.\Run-AccountGovernanceAudit.ps1 -SkipEntraExport
+
+# NDJSON only — skip the Excel JSON conversion step
+.\Run-AccountGovernanceAudit.ps1 -SkipConvertToJson
+```
+
+Each run creates a timestamped subdirectory under `Output\` (e.g. `Output\2026-04-20_143052\`) so previous runs are never overwritten. A `RunManifest.json` and `AccountGovernance.log` are written there on completion.
+
+Scripts 03–06 can also be run individually — see the step-by-step sections below.
 
 ---
 
@@ -42,12 +63,22 @@ A fourth bucket — **AD-only** — is identified from the AD side and cross-ref
 Before running any scripts, edit **`00_Config.ps1`** to match your environment:
 
 ```powershell
-$OutputPath        = "C:\tmp\"      # Output directory for all exports
 $ImmutableIdMethod = "ObjectGUID"   # See "Common AD-Entra Setups" below
+$Forests           = @("default")   # Multi-forest: @("corp.local", "subsidiary.com")
 $KeySyncRuleNames  = @(...)         # Sync rules to inspect in detail
 ```
 
+`$OutputPath` is resolved automatically relative to the scripts folder — no manual path configuration needed unless you want to write output elsewhere.
+
 See `ENVIRONMENT.md` for a per-setting reference table and a worked example.
+
+---
+
+## Breaking Change — Multi-value fields are now JSON arrays
+
+Multi-value fields (`OtherMails`, `ProxyAddresses`, `Identities`, `AssignedLicenses`, `AssignedPlans`, `OnPremisesProvisioningErrors`, `ServicePrincipalNames`) were previously exported as semicolon-delimited strings. They are now proper JSON arrays.
+
+**Impact:** Any existing Excel Power Query formulas that split on `";"` will need to be updated to use the JSON array expansion instead (`List.Transform`, `Table.ExpandListColumn`).
 
 ---
 
@@ -154,10 +185,20 @@ More than one result indicates a multi-forest configuration.
 
 **Key differences:**
 - Each forest may use a different source anchor method — confirm per-forest before running
-- `04_ExportADUsers.ps1` must be run once per forest domain; rename the output file between runs and combine before running `05_CrossReference.ps1`
 - ImmutableID collisions are possible if ObjectGUID is used across forests — this is the primary reason Microsoft recommends `mS-DS-ConsistencyGuid` for multi-forest environments
 
-**Script configuration (`00_Config.ps1`):** Set `$ImmutableIdMethod` to match the source anchor used in the target forest. Run the script suite once per forest, adjusting output file names to avoid overwriting between runs.
+**Script configuration (`00_Config.ps1`):**
+```powershell
+$Forests = @("corp.local", "subsidiary.com")
+$ImmutableIdMethod = "mS-DS-ConsistencyGuid"  # Recommended for multi-forest
+```
+
+The orchestrator (`Run-AccountGovernanceAudit.ps1`) runs `04_ExportADUsers.ps1` once per forest automatically, producing separate output files (`AD_AllUsers_corp.local.ndjson`, `AD_AllUsers_subsidiary.com.ndjson`). Script 05 unions them before cross-referencing.
+
+To export a specific forest manually:
+```powershell
+.\04_ExportADUsers.ps1 -ForestName "corp.local" -Server "dc01.corp.local"
+```
 
 ---
 
@@ -249,27 +290,24 @@ User properties can contain newline characters and special characters that corru
 
 ## Step 4 — Export AD Users
 
-> **TODO** — Not yet completed.
-
 Run **`04_ExportADUsers.ps1`** on a domain-joined machine with the RSAT AD module.
 
 This script exports all AD user accounts and calculates each user's ImmutableId using the method configured in `$ImmutableIdMethod` (`00_Config.ps1`). The ImmutableId is used in Step 5 to match AD users against their Entra counterparts.
 
-For **multi-forest environments** (Setup 3): run once per forest domain, rename the output file between runs, and combine before cross-referencing.
+Output: `AD_AllUsers_<ForestName>.ndjson` (default: `AD_AllUsers_default.ndjson`)
+
+For **multi-forest environments** (Setup 3): use the orchestrator or run manually with `-ForestName` per forest.
 
 ---
 
 ## Step 5 — Cross-reference and Analysis
 
-> **TODO** — Not yet completed.
-
 Run **`05_CrossReference.ps1`** from any machine with access to the NDJSON output files.
 
-- Cross-reference AD export against Entra buckets
-- Identify accounts in sync scope that are missing from Entra (potential sync failures)
-- Flag accounts with `OnPremisesProvisioningErrors`
-- Review last sign-in / last sync dates for stale account identification
-- Licensing review against active/enabled accounts
+- Cross-reference AD export against Entra buckets by ImmutableId
+- Identify AD accounts missing from Entra entirely (Bucket 4: AD-only)
+- Flag Entra synced accounts with `OnPremisesProvisioningErrors`
+- Output: `AD_OnlyAccounts.ndjson` and `Entra_ProvisioningErrors.ndjson`
 
 ---
 
@@ -330,6 +368,23 @@ Navigate to: Customize synchronization options → Filter by OUs
 
 ---
 
+## Scheduling
+
+To run the audit on a recurring schedule using Windows Task Scheduler:
+
+```
+Program:   powershell.exe
+Arguments: -NonInteractive -ExecutionPolicy Bypass -File "C:\Scripts\AD-Entra_AccountGovernance\Run-AccountGovernanceAudit.ps1"
+```
+
+**Important:** The Microsoft Graph connection requires either:
+- An interactive sign-in session (not suitable for unattended scheduling), **or**
+- An app registration with `User.Read.All` **application** permission and a certificate, with `Connect-MgGraph -TenantId ... -ClientId ... -CertificateThumbprint ...` called before the orchestrator runs.
+
+For unattended Graph auth, wrap the orchestrator call in a launcher script that handles the app-based connection first.
+
+---
+
 ## Files in This Folder
 
 | File | Purpose |
@@ -337,8 +392,10 @@ Navigate to: Customize synchronization options → Filter by OUs
 | `README.md` | This file |
 | `ENVIRONMENT.md` | Environment-specific reference values and configuration template |
 | `00_Config.ps1` | Shared configuration — edit before running any scripts |
-| `01_EntraConnect_Config.ps1` | Query Entra Connect server configuration |
-| `02_SyncRules.ps1` | Export and inspect sync rules |
+| `Run-AccountGovernanceAudit.ps1` | **Orchestrator** — runs scripts 03-06 in sequence |
+| `01_EntraConnect_Config.ps1` | Query Entra Connect server configuration (run on Connect server) |
+| `02_SyncRules.ps1` | Export and inspect sync rules (run on Connect server) |
 | `03_ExportEntraUsers.ps1` | Fetch all Entra users and split into audit buckets |
-| `04_ExportADUsers.ps1` | Export all AD users for cross-reference |
+| `04_ExportADUsers.ps1` | Export all AD users for cross-reference (`-ForestName`, `-Server` params) |
 | `05_CrossReference.ps1` | Cross-reference AD and Entra exports |
+| `06_ConvertToJson.ps1` | Convert NDJSON files to JSON arrays for Excel/Power Query |
