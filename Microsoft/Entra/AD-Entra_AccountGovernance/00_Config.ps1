@@ -42,7 +42,7 @@ $KeySyncRuleNames = @(
     # Example: "ORGPREFIX - In from AD - usageLocation"
 )
 
-# --- Additional AD user properties (used by 04_ExportADUsers.ps1) -------------
+# --- Additional AD user properties (used by 06_ExportADUsers.ps1) -------------
 # Add any org-specific or custom schema AD attributes to include in the export.
 # These are appended to the fixed property list and added as extra columns in
 # the output. Standard attributes and extensionAttribute1-15 are already included.
@@ -55,7 +55,7 @@ $AdditionalAdProperties = @(
 # List each AD forest name that should be included in the audit. The name is
 # used as a suffix on the AD export file (AD_AllUsers_<ForestName>.ndjson) and
 # as a sub-directory label in run manifests. Single-forest environments use the
-# default entry. For multiple forests run 04_ExportADUsers.ps1 once per forest
+# default entry. For multiple forests run 06_ExportADUsers.ps1 once per forest
 # (the orchestrator does this automatically).
 # Example: $Forests = @("corp.local", "subsidiary.com")
 $Forests = @("default")

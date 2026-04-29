@@ -144,7 +144,7 @@ By default `Get-ADUser` returns only a base set of attributes. The `-Properties 
 $ImmutableIdMethod = "ObjectGUID"
 ```
 
-**ImmutableId calculation (`04_ExportADUsers.ps1`):**
+**ImmutableId calculation (`06_ExportADUsers.ps1`):**
 ```powershell
 [System.Convert]::ToBase64String($user.ObjectGUID.ToByteArray())
 ```
@@ -169,7 +169,7 @@ $ImmutableIdMethod = "ObjectGUID"
 $ImmutableIdMethod = "mS-DS-ConsistencyGuid"
 ```
 
-**Key difference for scripts 04 and 05:** `04_ExportADUsers.ps1` reads `mS-DS-ConsistencyGuid` instead of `ObjectGUID` and Base64-encodes it. Users where this attribute is `$null` will have a `$null` ImmutableId — flag these as potential sync mismatches worth investigating.
+**Key difference for scripts 06 and 07:** `06_ExportADUsers.ps1` reads `mS-DS-ConsistencyGuid` instead of `ObjectGUID` and Base64-encodes it. Users where this attribute is `$null` will have a `$null` ImmutableId — flag these as potential sync mismatches worth investigating.
 
 ---
 
@@ -193,11 +193,11 @@ $Forests = @("corp.local", "subsidiary.com")
 $ImmutableIdMethod = "mS-DS-ConsistencyGuid"  # Recommended for multi-forest
 ```
 
-The orchestrator (`Run-AccountGovernanceAudit.ps1`) runs `04_ExportADUsers.ps1` once per forest automatically, producing separate output files (`AD_AllUsers_corp.local.ndjson`, `AD_AllUsers_subsidiary.com.ndjson`). Script 05 unions them before cross-referencing.
+The orchestrator (`Run-AccountGovernanceAudit.ps1`) runs `06_ExportADUsers.ps1` once per forest automatically, producing separate output files (`AD_AllUsers_corp.local.ndjson`, `AD_AllUsers_subsidiary.com.ndjson`). Script 07 unions them before cross-referencing.
 
 To export a specific forest manually:
 ```powershell
-.\04_ExportADUsers.ps1 -ForestName "corp.local" -Server "dc01.corp.local"
+.\06_ExportADUsers.ps1 -ForestName "corp.local" -Server "dc01.corp.local"
 ```
 
 ---
@@ -290,7 +290,7 @@ User properties can contain newline characters and special characters that corru
 
 ## Step 4 — Export AD Users
 
-Run **`04_ExportADUsers.ps1`** on a domain-joined machine with the RSAT AD module.
+Run **`06_ExportADUsers.ps1`** on a domain-joined machine with the RSAT AD module.
 
 This script exports all AD user accounts and calculates each user's ImmutableId using the method configured in `$ImmutableIdMethod` (`00_Config.ps1`). The ImmutableId is used in Step 5 to match AD users against their Entra counterparts.
 
@@ -302,7 +302,7 @@ For **multi-forest environments** (Setup 3): use the orchestrator or run manuall
 
 ## Step 5 — Cross-reference and Analysis
 
-Run **`05_CrossReference.ps1`** from any machine with access to the NDJSON output files.
+Run **`07_CrossReference.ps1`** from any machine with access to the NDJSON output files.
 
 - Cross-reference AD export against Entra buckets by ImmutableId
 - Identify AD accounts missing from Entra entirely (Bucket 4: AD-only)
@@ -392,10 +392,10 @@ For unattended Graph auth, wrap the orchestrator call in a launcher script that 
 | `README.md` | This file |
 | `ENVIRONMENT.md` | Environment-specific reference values and configuration template |
 | `00_Config.ps1` | Shared configuration — edit before running any scripts |
-| `Run-AccountGovernanceAudit.ps1` | **Orchestrator** — runs scripts 03-06 in sequence |
+| `Run-AccountGovernanceAudit.ps1` | **Orchestrator** — runs the numbered scripts in sequence |
 | `01_EntraConnect_Config.ps1` | Query Entra Connect server configuration (run on Connect server) |
 | `02_SyncRules.ps1` | Export and inspect sync rules (run on Connect server) |
 | `03_ExportEntraUsers.ps1` | Fetch all Entra users and split into audit buckets |
-| `04_ExportADUsers.ps1` | Export all AD users for cross-reference (`-ForestName`, `-Server` params) |
-| `05_CrossReference.ps1` | Cross-reference AD and Entra exports |
-| `06_ConvertToJson.ps1` | Convert NDJSON files to JSON arrays for Excel/Power Query |
+| `06_ExportADUsers.ps1` | Export all AD users for cross-reference (`-ForestName`, `-Server` params) |
+| `07_CrossReference.ps1` | Cross-reference AD and Entra exports |
+| `09_ConvertToJson.ps1` | Convert NDJSON files to JSON arrays for Excel/Power Query |

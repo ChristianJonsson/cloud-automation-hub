@@ -40,7 +40,7 @@ Write-Log "=== 03_ExportEntraUsers started (ImmutableIdMethod: $ImmutableIdMetho
 # --- Connect to Microsoft Graph -----------------------------------------------
 Connect-MgGraphWithRequirements `
     -GraphModuleNames @('Microsoft.Graph.Users') `
-    -RequiredScopes @('User.Read.All', 'Directory.Read.All')
+    -RequiredScopes @('User.Read.All', 'Directory.Read.All', 'AuditLog.Read.All')
 
 # --- Property list ------------------------------------------------------------
 $properties = @(
@@ -58,7 +58,8 @@ $properties = @(
     "OnPremisesDistinguishedName", "OnPremisesDomainName",
     "OnPremisesSamAccountName", "OnPremisesImmutableId",
     "OnPremisesSecurityIdentifier", "OnPremisesProvisioningErrors",
-    "OnPremisesExtensionAttributes"
+    "OnPremisesExtensionAttributes",
+    "SignInActivity"
 ) -join ","
 
 # --- Flatten function ---------------------------------------------------------
@@ -96,6 +97,7 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
         LastPasswordChangeDateTime          = $user.LastPasswordChangeDateTime
         PasswordPolicies                    = $user.PasswordPolicies
         SignInSessionsValidFromDateTime     = $user.SignInSessionsValidFromDateTime
+        LastSignInDateTime                  = $user.SignInActivity.LastSignInDateTime
 
         # External / guest
         ExternalUserState                   = $user.ExternalUserState

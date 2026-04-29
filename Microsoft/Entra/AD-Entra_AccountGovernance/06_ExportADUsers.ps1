@@ -1,5 +1,5 @@
 # ==============================================================================
-# 04_ExportADUsers.ps1
+# 06_ExportADUsers.ps1
 # Purpose : Export all AD user accounts for cross-reference against Entra buckets
 # Run on  : Domain-joined machine with RSAT AD module
 # Output  : <RunOutputPath>\AD_AllUsers_<ForestName>.ndjson
@@ -11,7 +11,7 @@
 #        ObjectGUID            - Base64-encodes the AD ObjectGUID (default)
 #        mS-DS-ConsistencyGuid - Base64-encodes the mS-DS-ConsistencyGuid attribute
 #        Custom                - Reads the attribute named in $CustomImmutableIdAttribute
-#   3. ImmutableId is used in 05_CrossReference.ps1 to match against Entra's
+#   3. ImmutableId is used in 07_CrossReference.ps1 to match against Entra's
 #      OnPremisesImmutableId
 # ==============================================================================
 
@@ -32,7 +32,7 @@ if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
     New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
 }
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
-Write-Log "=== 04_ExportADUsers started (ForestName: $ForestName, ImmutableIdMethod: $ImmutableIdMethod) ==="
+Write-Log "=== 06_ExportADUsers started (ForestName: $ForestName, ImmutableIdMethod: $ImmutableIdMethod) ==="
 
 # --- Module check -------------------------------------------------------------
 if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
@@ -299,5 +299,5 @@ $adUsers | ForEach-Object {
 } | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 } |
     Out-File $outputFile -Encoding UTF8
 
-Write-Log "=== 04_ExportADUsers complete ==="
+Write-Log "=== 06_ExportADUsers complete ==="
 Write-Log "  Written -> AD_AllUsers_${ForestName}.ndjson ($($adUsers.Count) users)"

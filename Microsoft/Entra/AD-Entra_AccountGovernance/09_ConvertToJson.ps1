@@ -1,10 +1,10 @@
 # ==============================================================================
-# 06_ConvertToJson.ps1
+# 09_ConvertToJson.ps1
 # Purpose : Convert all NDJSON export files to proper JSON arrays for use in
 #           Excel (Get Data -> JSON / Power Query) and other JSON-strict tools
 # Run on  : Any machine with access to the output files
 # Requires: 00_Config.ps1 (shared configuration)
-#           One or more *.ndjson files in $RunOutputPath (run scripts 03-05 first)
+#           One or more *.ndjson files in $RunOutputPath (run scripts 03-08 first)
 #
 # Why this exists:
 #   NDJSON (one JSON object per line) is the transitive format used by the
@@ -30,13 +30,13 @@ if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
     $latestRun = Get-ChildItem -Path $OutputPath -Directory -ErrorAction SilentlyContinue |
         Sort-Object Name -Descending | Select-Object -First 1
     if ($null -eq $latestRun) {
-        throw "No timestamped run directories found in '$OutputPath'. Run scripts 03-05 first."
+        throw "No timestamped run directories found in '$OutputPath'. Run scripts 03-08 first."
     }
     $RunOutputPath = $latestRun.FullName
     Write-Warning "No RunOutputPath set; using most recent run: $RunOutputPath"
 }
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
-Write-Log "=== 06_ConvertToJson started ==="
+Write-Log "=== 09_ConvertToJson started ==="
 
 # --- Find source files --------------------------------------------------------
 $ndjsonFiles = Get-ChildItem -Path $RunOutputPath -Filter "*.ndjson" -ErrorAction SilentlyContinue |
@@ -100,4 +100,4 @@ foreach ($file in $ndjsonFiles) {
     }
 }
 
-Write-Log "=== 06_ConvertToJson complete — $converted file(s) converted, $skipped skipped ==="
+Write-Log "=== 09_ConvertToJson complete — $converted file(s) converted, $skipped skipped ==="

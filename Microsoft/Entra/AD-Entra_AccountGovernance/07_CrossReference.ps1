@@ -1,10 +1,10 @@
 # ==============================================================================
-# 05_CrossReference.ps1
+# 07_CrossReference.ps1
 # Purpose : Cross-reference AD export against Entra buckets to identify
 #           AD-only accounts and surface sync anomalies
 # Run on  : Any machine with access to the NDJSON output files
 # Requires: 00_Config.ps1, and outputs from 03_ExportEntraUsers.ps1 and
-#           04_ExportADUsers.ps1
+#           06_ExportADUsers.ps1
 # ==============================================================================
 
 . "$PSScriptRoot\00_Config.ps1"
@@ -25,7 +25,7 @@ if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
     Write-Warning "No RunOutputPath set; using most recent run: $RunOutputPath"
 }
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
-Write-Log "=== 05_CrossReference started ==="
+Write-Log "=== 07_CrossReference started ==="
 
 # --- Input file validation ----------------------------------------------------
 $requiredInputFiles = @(
@@ -40,7 +40,7 @@ $forestAdFiles = @($Forests | ForEach-Object {
 
 if ($forestAdFiles.Count -eq 0) {
     $expectedFiles = $Forests | ForEach-Object { "AD_AllUsers_${_}.ndjson" }
-    throw "No AD user export files found in '$RunOutputPath'. Expected: $($expectedFiles -join ', '). Run script 04 first."
+    throw "No AD user export files found in '$RunOutputPath'. Expected: $($expectedFiles -join ', '). Run script 06 first."
 }
 
 $missingFiles = $requiredInputFiles | Where-Object { -not (Test-Path $_.Path) }
@@ -101,7 +101,7 @@ $withErrors | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 } |
 Write-Log "  Written -> Entra_ProvisioningErrors.ndjson"
 
 # --- Summary ------------------------------------------------------------------
-Write-Log "=== 05_CrossReference complete ==="
+Write-Log "=== 07_CrossReference complete ==="
 Write-Log "  AD total accounts         : $($adUsers.Count)"
 Write-Log "  Entra synced              : $($entraSynced.Count)"
 Write-Log "  Entra previously synced   : $($prevSynced.Count)"
