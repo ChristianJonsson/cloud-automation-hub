@@ -343,7 +343,11 @@ Captures all groups (security, M365, dynamic, distribution) plus direct membersh
 
 **Throttling:** group enumeration is the heaviest pipeline step. Members and owners are fetched via `$expand=members,owners` on the bulk group query, with a fallback per-group call when the expanded collection looks paginated (≥20 entries — Graph's default page size). Role-assignable groups (PAGs) are processed first so the most security-relevant data is on disk even if a long run is interrupted. Progress is logged every 250 groups with elapsed time and ETA.
 
-**Token refresh:** `Invoke-GraphOperationWithRetry` reactively reconnects on 401/auth-expiry errors so this step survives runs that exceed the default 60-minute Graph access-token TTL.
+**Token refresh:** `Invoke-GraphOperationWithRetry` keeps long runs alive across the default 60-minute Graph access-token TTL using a layered approach:
+
+1. **Proactive** — `GraphConnection.psm1` records the acquisition time of every successful `Connect-MgGraph`. Before each call, the retry wrapper checks the tracked age; once it reaches 50 minutes (configurable via `-ProactiveRefreshThresholdMinutes`) it disconnects and reconnects with the same scopes before invoking the operation. The 10-minute buffer is comfortably below TTL.
+2. **Reactive** — if a call still fails with a 401 / auth-expiry error (e.g. token rotated mid-flight, or pre-existing session whose age was not tracked), the wrapper performs a one-shot reconnect and retries.
+3. **Genuine-401 escalation** — if an auth-expiry error recurs immediately after a refresh attempt, the wrapper does NOT loop. The error is treated as a genuine 401 (revoked consent, lost permission, broken trust) and rethrown so it surfaces clearly.
 
 **Required Graph scopes:** `Group.Read.All`, `GroupMember.Read.All`, `Directory.Read.All`.
 

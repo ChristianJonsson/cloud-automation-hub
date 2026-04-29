@@ -20,6 +20,12 @@ function Import-SharedLoggingModule {
 
 Import-SharedLoggingModule
 
+# GraphConnection provides the token-age state and refresh helpers used by the
+# retry wrapper (Get-GraphTokenAge, Invoke-GraphTokenRefresh).
+if (-not (Get-Command -Name Get-GraphTokenAge -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot 'GraphConnection.psm1') -ErrorAction Stop
+}
+
 function New-CacheValidationResult {
     param(
         [Parameter(Mandatory = $true)]
@@ -115,24 +121,6 @@ function Test-IsAuthExpiryGraphError {
     return $false
 }
 
-# Reactive refresh: Get-MgContext in Graph PowerShell SDK 2.x does not expose
-# the bearer token's expiry, so we cannot check it proactively. Instead the
-# retry wrapper catches 401 errors and calls this to reconnect with the same
-# scopes — covers long-running operations (e.g. group enumeration) that exceed
-# the default 60-minute access-token TTL.
-function Invoke-GraphTokenRefresh {
-    $existingContext = Get-MgContext
-    if ($null -eq $existingContext) {
-        throw 'Cannot refresh Microsoft Graph token: no active context.'
-    }
-
-    $scopes = @($existingContext.Scopes)
-    Write-Log("Refreshing Microsoft Graph access token (reconnecting with $($scopes.Count) scope(s))...")
-    Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
-    Connect-MgGraph -Scopes $scopes -NoWelcome -ErrorAction Stop
-    Write-Log('Microsoft Graph access token refreshed.')
-}
-
 function Invoke-GraphOperationWithRetry {
     param(
         [Parameter(Mandatory = $true)]
@@ -148,10 +136,35 @@ function Invoke-GraphOperationWithRetry {
         [int]$InitialDelaySeconds = 2,
 
         [ValidateRange(1, 120)]
-        [int]$MaxDelaySeconds = 30
+        [int]$MaxDelaySeconds = 30,
+
+        # Proactively refresh the Graph access token when its tracked age
+        # reaches this many minutes, before invoking the operation. The default
+        # 50 leaves a 10-minute buffer below the standard 60-minute TTL.
+        [ValidateRange(1, 59)]
+        [int]$ProactiveRefreshThresholdMinutes = 50
     )
 
+    # Tracks whether the previous attempt's failure caused a reactive token
+    # refresh. If we see another auth-expiry error immediately after, the
+    # refresh didn't help — surface as a genuine 401 instead of looping.
+    $previousAttemptRefreshedForAuth = $false
+
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $proactivelyRefreshedThisAttempt = $false
+
+        $tokenAge = Get-GraphTokenAge
+        if ($null -ne $tokenAge -and $tokenAge.TotalMinutes -ge $ProactiveRefreshThresholdMinutes) {
+            try {
+                Write-Log("Graph token age $([Math]::Round($tokenAge.TotalMinutes, 1)) min — proactive refresh before '$OperationName' (attempt $attempt).")
+                Invoke-GraphTokenRefresh
+                $proactivelyRefreshedThisAttempt = $true
+            }
+            catch {
+                Write-Log("Proactive token refresh failed before '$OperationName': $($_.Exception.Message). Continuing — operation may still succeed or trigger reactive refresh.")
+            }
+        }
+
         try {
             return & $Operation
         }
@@ -164,18 +177,25 @@ function Invoke-GraphOperationWithRetry {
                 throw
             }
 
+            if ($isAuthExpiry -and ($previousAttemptRefreshedForAuth -or $proactivelyRefreshedThisAttempt)) {
+                Write-Log("Auth-expiry error during '$OperationName' persisted after token refresh — treating as genuine 401: $errorMessage")
+                throw
+            }
+
             if ($isAuthExpiry) {
                 Write-Log("Auth-expiry error during '$OperationName' (attempt $attempt of $MaxAttempts): $errorMessage")
                 try {
                     Invoke-GraphTokenRefresh
+                    $previousAttemptRefreshedForAuth = $true
                 }
                 catch {
-                    Write-Log("Token refresh failed during '$OperationName': $($_.Exception.Message)")
+                    Write-Log("Reactive token refresh failed during '$OperationName': $($_.Exception.Message)")
                     throw
                 }
             }
             else {
                 Write-Log("Transient Graph error during '$OperationName' (attempt $attempt of $MaxAttempts): $errorMessage")
+                $previousAttemptRefreshedForAuth = $false
             }
 
             $baseDelaySeconds = [Math]::Min($MaxDelaySeconds, [int]([Math]::Pow(2, $attempt - 1) * $InitialDelaySeconds))
@@ -421,4 +441,4 @@ function Get-VerifiedDomainsFromGraphOrCache {
     }
 }
 
-Export-ModuleMember -Function Invoke-GraphOperationWithRetry, Invoke-GraphTokenRefresh, Get-TenantVerifiedDomains, Test-CachedUsersData, Test-CachedVerifiedDomainsData, Get-UsersFromGraphOrCache, Get-VerifiedDomainsFromGraphOrCache
+Export-ModuleMember -Function Invoke-GraphOperationWithRetry, Get-TenantVerifiedDomains, Test-CachedUsersData, Test-CachedVerifiedDomainsData, Get-UsersFromGraphOrCache, Get-VerifiedDomainsFromGraphOrCache
