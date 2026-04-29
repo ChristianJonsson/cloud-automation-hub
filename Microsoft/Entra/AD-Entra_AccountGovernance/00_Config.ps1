@@ -51,6 +51,19 @@ $AdditionalAdProperties = @(
     # "employeeNumber"
 )
 
+# --- Permissions audit settings (used by 04_ExportEntraRoles.ps1) -------------
+# When $true, the role export queries PIM eligible role assignments in addition
+# to active assignments. Set to $false to skip the PIM call entirely (e.g. on
+# tenants without Entra ID P2). The script also catches license/permission
+# errors from the PIM endpoint and writes an empty eligibilities file so a
+# missing P2 license never aborts the run.
+$IncludePimEligibilities = $true
+
+# --- Stale admin threshold (used by 08_BuildAdminSummary.ps1) -----------------
+# Days since last interactive sign-in beyond which an admin account is flagged
+# as stale in the admin summary report.
+$StaleAdminThresholdDays = 90
+
 # --- Multi-forest configuration -----------------------------------------------
 # List each AD forest name that should be included in the audit. The name is
 # used as a suffix on the AD export file (AD_AllUsers_<ForestName>.ndjson) and
@@ -81,5 +94,13 @@ function Assert-GovernanceConfig {
         New-Item -ItemType Directory -Path $OutputPath -Force -ErrorAction Stop | Out-Null
     } catch {
         throw "OutputPath '$OutputPath' is not writable: $_"
+    }
+
+    if ($null -eq $IncludePimEligibilities -or $IncludePimEligibilities -isnot [bool]) {
+        throw "IncludePimEligibilities must be `$true or `$false (currently: $IncludePimEligibilities)."
+    }
+
+    if ($StaleAdminThresholdDays -isnot [int] -or $StaleAdminThresholdDays -lt 1) {
+        throw "StaleAdminThresholdDays must be a positive integer (currently: $StaleAdminThresholdDays)."
     }
 }

@@ -311,6 +311,44 @@ Run **`07_CrossReference.ps1`** from any machine with access to the NDJSON outpu
 
 ---
 
+## Permissions Audit (scripts 04 and 05)
+
+Scripts `04_ExportEntraRoles.ps1` and `05_ExportEntraGroups.ps1` run between the Entra user export and the AD export, capturing **who has privileges in the tenant** so that admin accounts and group memberships can be reported on alongside the sync data.
+
+The orchestrator runs both automatically. Each can be skipped independently with `-SkipRoleExport` / `-SkipGroupExport`.
+
+### Script 04 — Entra role export
+
+Captures directory role definitions and assignments:
+
+| File | Contents |
+|------|---------|
+| `Entra_RoleDefinitions.ndjson` | All directory role definitions (built-in + custom), including their `RolePermissions` |
+| `Entra_RoleAssignments.ndjson` | Active role assignments. Each row carries `PrincipalType` (User / Group / ServicePrincipal), `DirectoryScopeId`, `AppScopeId`, and `AssignmentType = "Active"` |
+| `Entra_RoleEligibilities.ndjson` | PIM-eligible role assignments. Same shape as active, plus `StartDateTime`, `EndDateTime`, `MemberType`, and `AssignmentType = "Eligible"`. Empty file on tenants without Entra ID P2 |
+
+**PIM behaviour:** when `$IncludePimEligibilities = $false` in `00_Config.ps1`, the eligibility query is skipped entirely. When `$true` (default), the script catches license/permission errors from the PIM endpoint and writes an empty eligibilities file rather than aborting the run — so a tenant without P2 still completes the pipeline cleanly.
+
+**Required Graph scopes:** `RoleManagement.Read.Directory`, `Directory.Read.All`.
+
+### Script 05 — Entra group export
+
+Captures all groups (security, M365, dynamic, distribution) plus direct membership and ownership:
+
+| File | Contents |
+|------|---------|
+| `Entra_Groups.ndjson` | All groups with type flags (`SecurityEnabled`, `MailEnabled`, `GroupTypes`, `IsAssignableToRole`), membership rules for dynamic groups, on-prem sync info |
+| `Entra_GroupMembers.ndjson` | One row per (group, member). Direct membership only — nested expansion happens in step 08 |
+| `Entra_GroupOwners.ndjson` | One row per (group, owner) |
+
+**Throttling:** group enumeration is the heaviest pipeline step. Members and owners are fetched via `$expand=members,owners` on the bulk group query, with a fallback per-group call when the expanded collection looks paginated (≥20 entries — Graph's default page size). Role-assignable groups (PAGs) are processed first so the most security-relevant data is on disk even if a long run is interrupted. Progress is logged every 250 groups with elapsed time and ETA.
+
+**Token refresh:** `Invoke-GraphOperationWithRetry` reactively reconnects on 401/auth-expiry errors so this step survives runs that exceed the default 60-minute Graph access-token TTL.
+
+**Required Graph scopes:** `Group.Read.All`, `GroupMember.Read.All`, `Directory.Read.All`.
+
+---
+
 ## Troubleshooting
 
 ### Get-ADUser returns no msDS-* attributes on synced users
@@ -396,6 +434,8 @@ For unattended Graph auth, wrap the orchestrator call in a launcher script that 
 | `01_EntraConnect_Config.ps1` | Query Entra Connect server configuration (run on Connect server) |
 | `02_SyncRules.ps1` | Export and inspect sync rules (run on Connect server) |
 | `03_ExportEntraUsers.ps1` | Fetch all Entra users and split into audit buckets |
+| `04_ExportEntraRoles.ps1` | Export directory role definitions, active assignments, and PIM eligibilities |
+| `05_ExportEntraGroups.ps1` | Export all groups with direct members and owners |
 | `06_ExportADUsers.ps1` | Export all AD users for cross-reference (`-ForestName`, `-Server` params) |
 | `07_CrossReference.ps1` | Cross-reference AD and Entra exports |
 | `09_ConvertToJson.ps1` | Convert NDJSON files to JSON arrays for Excel/Power Query |

@@ -98,6 +98,7 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
         PasswordPolicies                    = $user.PasswordPolicies
         SignInSessionsValidFromDateTime     = $user.SignInSessionsValidFromDateTime
         LastSignInDateTime                  = $user.SignInActivity.LastSignInDateTime
+        LastNonInteractiveSignInDateTime    = $user.SignInActivity.LastNonInteractiveSignInDateTime
 
         # External / guest
         ExternalUserState                   = $user.ExternalUserState
