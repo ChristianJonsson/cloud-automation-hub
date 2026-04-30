@@ -1,0 +1,4 @@
+{"GroupId":"g-pag","GroupDisplayName":"GA-PAG","GroupIsAssignableToRole":true,"MemberId":"u-dave","MemberType":"User","MemberDisplayName":"Dave","MemberUserPrincipalName":"dave@contoso.com"}
+{"GroupId":"g-pag","GroupDisplayName":"GA-PAG","GroupIsAssignableToRole":true,"MemberId":"g-nested","MemberType":"Group","MemberDisplayName":"Nested-Group","MemberUserPrincipalName":null}
+{"GroupId":"g-nested","GroupDisplayName":"Nested-Group","GroupIsAssignableToRole":false,"MemberId":"u-eve","MemberType":"User","MemberDisplayName":"Eve","MemberUserPrincipalName":"eve@contoso.com"}
+{"GroupId":"g-nested","GroupDisplayName":"Nested-Group","GroupIsAssignableToRole":false,"MemberId":"u-alice","MemberType":"User","MemberDisplayName":"Alice","MemberUserPrincipalName":"alice@contoso.com"}

@@ -42,6 +42,10 @@ param(
     # manually from a domain-joined machine.
     [switch]$SkipADExport,
 
+    # Skip script 08 (admin summary derivation). Useful when only the raw
+    # role/group/user data is needed and downstream reporting is offline.
+    [switch]$SkipAdminSummary,
+
     # Skip script 09 (NDJSON to JSON conversion). Use when only NDJSON output
     # is needed (e.g., for pipeline consumption rather than Excel).
     [switch]$SkipConvertToJson
@@ -141,6 +145,19 @@ try {
     throw
 }
 
+# --- Step 08: Admin summary ---------------------------------------------------
+if (-not $SkipAdminSummary) {
+    Write-Log "--- Step 08: Admin summary ---"
+    try {
+        . "$PSScriptRoot\08_BuildAdminSummary.ps1"
+    } catch {
+        Write-Log "Step 08 FAILED: $_"
+        throw
+    }
+} else {
+    Write-Log "--- Step 08: Skipped (SkipAdminSummary) ---"
+}
+
 # --- Step 09: Convert NDJSON to JSON ------------------------------------------
 if (-not $SkipConvertToJson) {
     Write-Log "--- Step 09: Convert NDJSON to JSON ---"
@@ -157,7 +174,8 @@ if (-not $SkipConvertToJson) {
 # --- Run manifest -------------------------------------------------------------
 # Variables from dot-sourced scripts are available here: $synced, $prevSynced,
 # $cloudOnly, $adOnly, $withErrors, $adUsers, $roleDefinitions, $roleAssignments,
-# $roleEligibilities, $allGroups, $memberCount, $ownerCount
+# $roleEligibilities, $allGroups, $memberCount, $ownerCount, $effectiveAdmins,
+# $nonUserRoleHolders
 $auditEnd = Get-Date
 
 $manifest = [ordered]@{
@@ -180,12 +198,15 @@ $manifest = [ordered]@{
         ADTotal            = if (Get-Variable -Name adUsers            -ErrorAction SilentlyContinue) { @($adUsers).Count }            else { $null }
         ADOnly             = if (Get-Variable -Name adOnly             -ErrorAction SilentlyContinue) { @($adOnly).Count }             else { $null }
         ProvisioningErrors = if (Get-Variable -Name withErrors         -ErrorAction SilentlyContinue) { @($withErrors).Count }         else { $null }
+        EffectiveAdmins    = if (Get-Variable -Name effectiveAdmins    -ErrorAction SilentlyContinue) { @($effectiveAdmins).Count }    else { $null }
+        NonUserRoleHolders = if (Get-Variable -Name nonUserRoleHolders -ErrorAction SilentlyContinue) { @($nonUserRoleHolders).Count } else { $null }
     }
     SkippedSteps      = @(
         if ($SkipEntraExport)   { "03_ExportEntraUsers" }
         if ($SkipRoleExport)    { "04_ExportEntraRoles" }
         if ($SkipGroupExport)   { "05_ExportEntraGroups" }
         if ($SkipADExport)      { "06_ExportADUsers" }
+        if ($SkipAdminSummary)  { "08_BuildAdminSummary" }
         if ($SkipConvertToJson) { "09_ConvertToJson" }
     )
 }

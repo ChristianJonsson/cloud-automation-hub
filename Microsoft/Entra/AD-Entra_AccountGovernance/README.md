@@ -351,6 +351,52 @@ Captures all groups (security, M365, dynamic, distribution) plus direct membersh
 
 **Required Graph scopes:** `Group.Read.All`, `GroupMember.Read.All`, `Directory.Read.All`.
 
+### Script 08 — Admin summary derivation
+
+Joins users × roles × group memberships into the file top management actually wants. Pure transformation — no Graph calls.
+
+| File | Contents |
+|------|---------|
+| `Entra_EffectiveAdmins.ndjson` | One row per (user, role, assignment-path). A user may appear multiple times when held by Direct *and* via a role-assignable group. Each row carries `UserType`, `OnPremisesSyncEnabled`, `AccountEnabled`, `LastSignInDateTime`, `IsStale`, `Scope`, `AssignmentType` (Active/Eligible). |
+| `Entra_NonUserRoleHolders.ndjson` | Service principals and managed identities holding directory roles. Reported separately so the user-facing admin file stays clean. |
+| `Entra_AdminSummary.json` | Aggregate counts: total admin rows / unique users, Active vs Eligible, Direct vs ViaGroup, synced vs cloud-only, guest admins, stale admins (using `$StaleAdminThresholdDays`), counts by role name. |
+
+**Effective admins via groups:** when a directory role is assigned to a role-assignable group (a "PAG"), this step walks group nesting transitively to surface the actual users. `AssignmentPath` reads `ViaGroup:<GroupDisplayName>` so the lineage is traceable.
+
+**No Graph scopes needed.** The script consumes the NDJSON files produced by steps 03/04/05.
+
+---
+
+## Testing
+
+The join logic in `08_BuildAdminSummary.ps1` is covered by Pester 5 tests under `Tests\`:
+
+```text
+Tests\
+    08_BuildAdminSummary.Tests.ps1
+    Fixtures\
+        Users.ndjson          (5 users: synced/cloud-only/guest mix)
+        Roles.ndjson          (Global Admin, User Admin, custom role)
+        RoleAssignments.ndjson (direct user, direct group, direct SP)
+        RoleEligibilities.ndjson (one PIM-eligible user)
+        Groups.ndjson         (one role-assignable group, one nested)
+        GroupMembers.ndjson   (nested membership chain)
+```
+
+The tests cover Direct vs ViaGroup vs nested-group vs ServicePrincipal, dedup-but-keep-both for users with both paths, PIM eligibility, stale-admin threshold, and empty-input safety.
+
+The script exposes `Build-AdminSummary` as a function and gates its main I/O block behind a global sentinel (`$BuildAdminSummary_TestMode`), so tests dot-source the script without triggering file I/O and call the function directly with fixture arrays.
+
+**Running the tests** (Pester 5+ required):
+
+```powershell
+Install-Module Pester -Scope CurrentUser -MinimumVersion 5.0.0
+Import-Module Pester
+Invoke-Pester .\Microsoft\Entra\AD-Entra_AccountGovernance\Tests\
+```
+
+The data-extraction scripts (03/04/05/06) are not unit-tested — they are thin wrappers over Graph and AD calls where mocking the world produces little value compared to a smoke run against a dev tenant.
+
 ---
 
 ## Troubleshooting
@@ -442,4 +488,6 @@ For unattended Graph auth, wrap the orchestrator call in a launcher script that 
 | `05_ExportEntraGroups.ps1` | Export all groups with direct members and owners |
 | `06_ExportADUsers.ps1` | Export all AD users for cross-reference (`-ForestName`, `-Server` params) |
 | `07_CrossReference.ps1` | Cross-reference AD and Entra exports |
+| `08_BuildAdminSummary.ps1` | Derive effective admins, non-user role holders, and aggregate admin summary |
 | `09_ConvertToJson.ps1` | Convert NDJSON files to JSON arrays for Excel/Power Query |
+| `Tests\` | Pester 5 tests + fixtures for `08_BuildAdminSummary.ps1` |
