@@ -10,12 +10,14 @@
 # Requires: 00_Config.ps1 (shared configuration)
 #
 # Throttling note:
-#   Group enumeration is the heaviest pipeline step. Initial $expand=members,
-#   owners returns up to 20 entries per relationship in the bulk Get-MgGroup
-#   call; groups whose expanded collection looks paginated (20+ entries) fall
-#   back to a dedicated per-group call. Role-assignable groups (PAGs) are
-#   processed first so that if the run dies mid-way the most security-relevant
-#   data is already on disk.
+#   Group enumeration is the heaviest pipeline step. Members and owners are
+#   fetched via two bulk Get-MgGroup calls (one with $expand=members, one with
+#   $expand=owners) — Graph rejects multi-property $expand on /groups, so they
+#   must be separate passes. Owner data is merged into the group list by Id.
+#   Each expand returns up to 20 entries per relationship; groups whose
+#   expanded collection looks paginated (20+ entries) fall back to a dedicated
+#   per-group call. Role-assignable groups (PAGs) are processed first so that
+#   if the run dies mid-way the most security-relevant data is already on disk.
 # ==============================================================================
 
 . "$PSScriptRoot\00_Config.ps1"
@@ -125,16 +127,31 @@ function Flatten-GroupRelationship {
     }
 }
 
-# --- 1. Bulk group fetch (with expand) ----------------------------------------
-Write-Log 'Fetching all groups (with $expand=members,owners)...'
+# --- 1. Bulk group fetch (two passes — Graph allows only one $expand) --------
 $startTime = Get-Date
 
-$allGroups = Invoke-GraphOperationWithRetry -OperationName 'Get-MgGroup full tenant listing' -Operation {
-    Get-MgGroup -All -Property $groupProperties -ExpandProperty 'Members,Owners' -ErrorAction Stop
+Write-Log 'Fetching all groups (pass 1: $expand=members)...'
+$allGroups = Invoke-GraphOperationWithRetry -OperationName 'Get-MgGroup with members expansion' -Operation {
+    Get-MgGroup -All -Property $groupProperties -ExpandProperty Members -ErrorAction Stop
 }
+$pass1Elapsed = (Get-Date) - $startTime
+Write-Log "  Fetched $($allGroups.Count) groups in $([int]$pass1Elapsed.TotalSeconds) seconds"
 
-$elapsed = (Get-Date) - $startTime
-Write-Log "  Fetched $($allGroups.Count) groups in $([int]$elapsed.TotalSeconds) seconds"
+Write-Log 'Fetching all groups (pass 2: $expand=owners)...'
+$pass2Start = Get-Date
+$groupsWithOwners = Invoke-GraphOperationWithRetry -OperationName 'Get-MgGroup with owners expansion' -Operation {
+    Get-MgGroup -All -Property 'Id' -ExpandProperty Owners -ErrorAction Stop
+}
+$pass2Elapsed = (Get-Date) - $pass2Start
+Write-Log "  Fetched $($groupsWithOwners.Count) group/owners records in $([int]$pass2Elapsed.TotalSeconds) seconds"
+
+# Merge owners into the primary group list by Id.
+$ownersByGroupId = @{}
+foreach ($entry in $groupsWithOwners) {
+    if ($entry.Id) {
+        $ownersByGroupId[$entry.Id] = @($entry.Owners)
+    }
+}
 
 # Order PAGs first so the most security-relevant data is written even if the
 # membership pass is interrupted.
@@ -182,8 +199,8 @@ foreach ($group in $allGroups) {
         $memberCount += $members.Count
     }
 
-    # --- Owners ---------------------------------------------------------------
-    $expandedOwners = @($group.Owners)
+    # --- Owners (from the second bulk fetch, merged by Id) -------------------
+    $expandedOwners = if ($ownersByGroupId.ContainsKey($group.Id)) { @($ownersByGroupId[$group.Id]) } else { @() }
     if ($expandedOwners.Count -ge $ExpandPageSizeThreshold) {
         $owners = Invoke-GraphOperationWithRetry -OperationName "Get-MgGroupOwner for $($group.Id)" -Operation {
             Get-MgGroupOwner -GroupId $group.Id -All -ErrorAction Stop
