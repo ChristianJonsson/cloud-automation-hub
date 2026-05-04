@@ -35,7 +35,7 @@ if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
     New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
 }
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
-Write-Log "=== 03_ExportEntraUsers started (ImmutableIdMethod: $ImmutableIdMethod) ==="
+Write-Log "=== 03_ExportEntraUsers started (ImmutableIdMethod: $ImmutableIdMethod, IncludeManagerLookup: $IncludeManagerLookup) ==="
 
 # --- Connect to Microsoft Graph -----------------------------------------------
 Connect-MgGraphWithRequirements `
@@ -53,10 +53,12 @@ $properties = @(
     "ExternalUserState", "ExternalUserStateChangeDateTime",
     "IsResourceAccount", "IsManagementRestricted",
     "Department", "JobTitle", "CompanyName", "EmployeeId", "EmployeeType",
-    "UsageLocation", "AssignedLicenses", "AssignedPlans",
+    "EmployeeHireDate", "EmployeeOrgData",
+    "UsageLocation", "PreferredDataLocation", "AssignedLicenses", "AssignedPlans",
     "OnPremisesSyncEnabled", "OnPremisesLastSyncDateTime",
     "OnPremisesDistinguishedName", "OnPremisesDomainName",
-    "OnPremisesSamAccountName", "OnPremisesImmutableId",
+    "OnPremisesSamAccountName", "OnPremisesUserPrincipalName",
+    "OnPremisesImmutableId",
     "OnPremisesSecurityIdentifier", "OnPremisesProvisioningErrors",
     "OnPremisesExtensionAttributes",
     "SignInActivity"
@@ -66,7 +68,17 @@ $properties = @(
 # Multi-value fields are kept as JSON arrays (not semicolon-joined strings) to
 # preserve structure and avoid data corruption when values contain semicolons.
 function Flatten-User ($user, [string]$BucketLabel = $null) {
-    $extAttribs = $user.OnPremisesExtensionAttributes
+    $extAttribs   = $user.OnPremisesExtensionAttributes
+    $employeeOrg  = $user.EmployeeOrgData
+
+    $managerId          = $null
+    $managerDisplayName = $null
+    if ($null -ne $user.Manager) {
+        $managerId = $user.Manager.Id
+        if ($null -ne $user.Manager.AdditionalProperties) {
+            $managerDisplayName = $user.Manager.AdditionalProperties['displayName']
+        }
+    }
 
     [PSCustomObject]@{
         Bucket                              = $BucketLabel
@@ -74,6 +86,8 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
         # Core identity
         Id                                  = $user.Id
         DisplayName                         = $user.DisplayName
+        GivenName                           = $user.GivenName
+        Surname                             = $user.Surname
         UserPrincipalName                   = $user.UserPrincipalName
         Mail                                = $user.Mail
         MailNickname                        = $user.MailNickname
@@ -110,9 +124,15 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
         CompanyName                         = $user.CompanyName
         EmployeeId                          = $user.EmployeeId
         EmployeeType                        = $user.EmployeeType
+        EmployeeHireDate                    = $user.EmployeeHireDate
+        Division                            = $employeeOrg.Division
+        CostCenter                          = $employeeOrg.CostCenter
+        ManagerId                           = $managerId
+        ManagerDisplayName                  = $managerDisplayName
 
         # Licensing
         UsageLocation                       = $user.UsageLocation
+        PreferredDataLocation               = $user.PreferredDataLocation
         AssignedLicenses                    = @($user.AssignedLicenses | ForEach-Object { $_.SkuId })
         AssignedPlans                       = @($user.AssignedPlans | ForEach-Object {
                                                 [PSCustomObject]@{
@@ -128,6 +148,7 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
         OnPremisesDistinguishedName         = $user.OnPremisesDistinguishedName
         OnPremisesDomainName                = $user.OnPremisesDomainName
         OnPremisesSamAccountName            = $user.OnPremisesSamAccountName
+        OnPremisesUserPrincipalName         = $user.OnPremisesUserPrincipalName
         OnPremisesImmutableId               = $user.OnPremisesImmutableId
         OnPremisesSecurityIdentifier        = $user.OnPremisesSecurityIdentifier
         OnPremisesProvisioningErrors        = @($user.OnPremisesProvisioningErrors | ForEach-Object {
@@ -164,7 +185,11 @@ Write-Log "Fetching all users from Entra (may take 20+ minutes in large tenants)
 $startTime = Get-Date
 
 $allUsers = Invoke-GraphOperationWithRetry -OperationName 'Get-MgUser full tenant listing' -Operation {
-    Get-MgUser -All -Property $properties -ErrorAction Stop
+    if ($IncludeManagerLookup) {
+        Get-MgUser -All -Property $properties -ExpandProperty Manager -ErrorAction Stop
+    } else {
+        Get-MgUser -All -Property $properties -ErrorAction Stop
+    }
 }
 
 $elapsed = (Get-Date) - $startTime

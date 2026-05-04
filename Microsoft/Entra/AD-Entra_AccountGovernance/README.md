@@ -286,6 +286,10 @@ User properties can contain newline characters and special characters that corru
 | Previously synced | `OnPremisesSyncEnabled -ne $true` AND `OnPremisesImmutableId -ne $null` |
 | Cloud-only | `OnPremisesSyncEnabled -ne $true` AND `OnPremisesImmutableId -eq $null` |
 
+### Manager lookup
+
+Each user record carries `ManagerId` and `ManagerDisplayName` by default — the bulk fetch uses `$expand=manager` to attach the manager directoryObject inline, enabling manager-by-admin reporting and attestation flows in step 08. This roughly doubles the response payload from Graph. Set `$IncludeManagerLookup = $false` in `00_Config.ps1` to skip; the two manager fields will emit as `$null` but the schema stays stable.
+
 ---
 
 ## Step 4 — Export AD Users

@@ -64,6 +64,14 @@ $IncludePimEligibilities = $true
 # as stale in the admin summary report.
 $StaleAdminThresholdDays = 90
 
+# --- Manager lookup (used by 03_ExportEntraUsers.ps1) -------------------------
+# When $true, the user export adds $expand=manager to the bulk Get-MgUser call
+# so each user record carries ManagerId and ManagerDisplayName. Doubles the
+# response payload from Graph but enables manager-by-admin reporting and
+# attestation workflows. Set to $false to skip — manager fields will emit as
+# null but the output schema stays stable.
+$IncludeManagerLookup = $true
+
 # --- Multi-forest configuration -----------------------------------------------
 # List each AD forest name that should be included in the audit. The name is
 # used as a suffix on the AD export file (AD_AllUsers_<ForestName>.ndjson) and
@@ -102,5 +110,9 @@ function Assert-GovernanceConfig {
 
     if ($StaleAdminThresholdDays -isnot [int] -or $StaleAdminThresholdDays -lt 1) {
         throw "StaleAdminThresholdDays must be a positive integer (currently: $StaleAdminThresholdDays)."
+    }
+
+    if ($null -eq $IncludeManagerLookup -or $IncludeManagerLookup -isnot [bool]) {
+        throw "IncludeManagerLookup must be `$true or `$false (currently: $IncludeManagerLookup)."
     }
 }

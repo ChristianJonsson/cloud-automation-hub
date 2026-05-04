@@ -89,6 +89,34 @@ function Get-DirectoryObjectField {
     return $Object.AdditionalProperties[$Field]
 }
 
+# Per-group relationship fetch via direct Graph request. Avoids Get-MgGroupMember
+# / Get-MgGroupOwner which can re-use the bulk-fetch's embedded
+# `<rel>@odata.nextLink` continuation token from $group — those tokens have a
+# short TTL (~5 min) and a 5+ minute Pass 1 leaves them stale by the time the
+# per-group fallback runs, producing Directory_ExpiredPageToken 400 errors.
+function Get-FreshGroupRelationship {
+    param(
+        [Parameter(Mandatory)] [string]$GroupId,
+        [Parameter(Mandatory)] [ValidateSet('members', 'owners')] [string]$Relationship
+    )
+
+    $items = New-Object System.Collections.Generic.List[object]
+    $url = "/v1.0/groups/$GroupId/$($Relationship)?`$top=999"
+    while ($url) {
+        $response = Invoke-MgGraphRequest -Method GET -Uri $url -ErrorAction Stop
+        if ($null -ne $response.value) {
+            foreach ($entry in [object[]]$response.value) {
+                $items.Add([PSCustomObject]@{
+                    Id                   = $entry['id']
+                    AdditionalProperties = $entry
+                })
+            }
+        }
+        $url = $response.'@odata.nextLink'
+    }
+    return $items.ToArray()
+}
+
 function Flatten-Group ($group) {
     [PSCustomObject]@{
         Id                              = $group.Id
@@ -184,8 +212,8 @@ foreach ($group in $allGroups) {
     # --- Members --------------------------------------------------------------
     $expandedMembers = @($group.Members)
     if ($expandedMembers.Count -ge $ExpandPageSizeThreshold) {
-        $members = Invoke-GraphOperationWithRetry -OperationName "Get-MgGroupMember for $($group.Id)" -Operation {
-            Get-MgGroupMember -GroupId $group.Id -All -ErrorAction Stop
+        $members = Invoke-GraphOperationWithRetry -OperationName "members for $($group.Id)" -Operation {
+            Get-FreshGroupRelationship -GroupId $group.Id -Relationship 'members'
         }
         $paginatedMembers++
     } else {
@@ -202,8 +230,8 @@ foreach ($group in $allGroups) {
     # --- Owners (from the second bulk fetch, merged by Id) -------------------
     $expandedOwners = if ($ownersByGroupId.ContainsKey($group.Id)) { @($ownersByGroupId[$group.Id]) } else { @() }
     if ($expandedOwners.Count -ge $ExpandPageSizeThreshold) {
-        $owners = Invoke-GraphOperationWithRetry -OperationName "Get-MgGroupOwner for $($group.Id)" -Operation {
-            Get-MgGroupOwner -GroupId $group.Id -All -ErrorAction Stop
+        $owners = Invoke-GraphOperationWithRetry -OperationName "owners for $($group.Id)" -Operation {
+            Get-FreshGroupRelationship -GroupId $group.Id -Relationship 'owners'
         }
         $paginatedOwners++
     } else {
