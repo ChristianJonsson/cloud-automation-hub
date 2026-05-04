@@ -60,8 +60,12 @@ $ErrorActionPreference = 'Stop'
 $loggingModulePath = Join-Path $PSScriptRoot '..\..\Common\Modules\Shared\Logging.psm1'
 Import-Module $loggingModulePath -Force -ErrorAction Stop
 
-# Create a single timestamped directory shared by all steps
-$RunTimestamp  = Get-Date -Format 'yyyy-MM-dd_HHmmss'
+# Create a single timestamped directory shared by all steps. $RunFileSuffix is
+# the same moment formatted for use inside output filenames so each file is
+# self-identifying when copied out of the run dir.
+$runStartDate  = Get-Date
+$RunTimestamp  = $runStartDate.ToString('yyyy-MM-dd_HHmmss')
+$RunFileSuffix = Get-RunFileSuffix -RunDate $runStartDate
 $RunOutputPath = Join-Path $OutputPath $RunTimestamp
 New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
 
@@ -211,7 +215,7 @@ $manifest = [ordered]@{
     )
 }
 
-$manifestPath = Join-Path $RunOutputPath 'RunManifest.json'
+$manifestPath = Join-Path $RunOutputPath "RunManifest_$RunFileSuffix.json"
 $manifest | ConvertTo-Json -Depth 5 | Out-File $manifestPath -Encoding UTF8
 Write-Log "Run manifest written to $manifestPath"
 

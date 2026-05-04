@@ -3,7 +3,7 @@
 # Purpose : Fetch all Entra users once, split into three audit buckets,
 #           export as NDJSON (safe against newlines/special chars in values)
 # Run on  : Any machine with Microsoft.Graph PowerShell module
-# Output  : <RunOutputPath>\Entra_*.ndjson
+# Output  : <RunOutputPath>\Entra_*_<RunFileSuffix>.ndjson
 # Requires: 00_Config.ps1 (shared configuration)
 #
 # Why NDJSON: User properties can contain newline characters and other special
@@ -31,8 +31,14 @@ Import-Module $graphDataModulePath -Force -ErrorAction Stop
 # in the caller's scope and is reused here. For standalone runs a new timestamped
 # directory is created so each run's output is preserved independently.
 if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
-    $RunOutputPath = Join-Path $OutputPath (Get-Date -Format 'yyyy-MM-dd_HHmmss')
+    $standaloneDate = Get-Date
+    $RunOutputPath = Join-Path $OutputPath $standaloneDate.ToString('yyyy-MM-dd_HHmmss')
+    $RunFileSuffix = Get-RunFileSuffix -RunDate $standaloneDate
     New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
+}
+if (-not (Get-Variable -Name RunFileSuffix -ErrorAction SilentlyContinue) -or [string]::IsNullOrEmpty($RunFileSuffix)) {
+    $RunFileSuffix = ConvertTo-RunFileSuffix -DirectoryName (Split-Path $RunOutputPath -Leaf)
+    if ([string]::IsNullOrEmpty($RunFileSuffix)) { $RunFileSuffix = Get-RunFileSuffix }
 }
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
 Write-Log "=== 03_ExportEntraUsers started (ImmutableIdMethod: $ImmutableIdMethod, IncludeManagerLookup: $IncludeManagerLookup) ==="
@@ -199,9 +205,10 @@ Write-Log "Fetch complete: $($allUsers.Count) total users in $([int]$elapsed.Tot
 Write-Log "Processing Bucket 1 - Actively synced..."
 $synced = $allUsers | Where-Object { $_.OnPremisesSyncEnabled -eq $true }
 Write-Log "  Count: $($synced.Count)"
+$syncedFile = "Entra_SyncedUsers_$RunFileSuffix.ndjson"
 $synced | ForEach-Object { Flatten-User $_ "ActivelySynced" | ConvertTo-Json -Compress -Depth 5 } |
-    Out-File (Join-Path $RunOutputPath 'Entra_SyncedUsers.ndjson') -Encoding UTF8
-Write-Log "  Written -> Entra_SyncedUsers.ndjson"
+    Out-File (Join-Path $RunOutputPath $syncedFile) -Encoding UTF8
+Write-Log "  Written -> $syncedFile"
 
 # --- Bucket 2: Previously synced ----------------------------------------------
 Write-Log "Processing Bucket 2 - Previously synced..."
@@ -209,9 +216,10 @@ $prevSynced = $allUsers | Where-Object {
     $_.OnPremisesSyncEnabled -ne $true -and $_.OnPremisesImmutableId -ne $null
 }
 Write-Log "  Count: $($prevSynced.Count)"
+$prevSyncedFile = "Entra_PreviouslySynced_$RunFileSuffix.ndjson"
 $prevSynced | ForEach-Object { Flatten-User $_ "PreviouslySynced" | ConvertTo-Json -Compress -Depth 5 } |
-    Out-File (Join-Path $RunOutputPath 'Entra_PreviouslySynced.ndjson') -Encoding UTF8
-Write-Log "  Written -> Entra_PreviouslySynced.ndjson"
+    Out-File (Join-Path $RunOutputPath $prevSyncedFile) -Encoding UTF8
+Write-Log "  Written -> $prevSyncedFile"
 
 # --- Bucket 3: Cloud only -----------------------------------------------------
 Write-Log "Processing Bucket 3 - Cloud only..."
@@ -219,18 +227,20 @@ $cloudOnly = $allUsers | Where-Object {
     $_.OnPremisesSyncEnabled -ne $true -and $_.OnPremisesImmutableId -eq $null
 }
 Write-Log "  Count: $($cloudOnly.Count)"
+$cloudOnlyFile = "Entra_CloudOnly_$RunFileSuffix.ndjson"
 $cloudOnly | ForEach-Object { Flatten-User $_ "CloudOnly" | ConvertTo-Json -Compress -Depth 5 } |
-    Out-File (Join-Path $RunOutputPath 'Entra_CloudOnly.ndjson') -Encoding UTF8
-Write-Log "  Written -> Entra_CloudOnly.ndjson"
+    Out-File (Join-Path $RunOutputPath $cloudOnlyFile) -Encoding UTF8
+Write-Log "  Written -> $cloudOnlyFile"
 
 # --- All users (combined) -----------------------------------------------------
 # Concatenate the three bucket files — no re-processing, Bucket field identifies origin
 Write-Log "Writing combined export..."
-Get-Content (Join-Path $RunOutputPath 'Entra_SyncedUsers.ndjson'),
-            (Join-Path $RunOutputPath 'Entra_PreviouslySynced.ndjson'),
-            (Join-Path $RunOutputPath 'Entra_CloudOnly.ndjson') |
-    Out-File (Join-Path $RunOutputPath 'Entra_AllUsers.ndjson') -Encoding UTF8
-Write-Log "  Written -> Entra_AllUsers.ndjson"
+$allUsersFile = "Entra_AllUsers_$RunFileSuffix.ndjson"
+Get-Content (Join-Path $RunOutputPath $syncedFile),
+            (Join-Path $RunOutputPath $prevSyncedFile),
+            (Join-Path $RunOutputPath $cloudOnlyFile) |
+    Out-File (Join-Path $RunOutputPath $allUsersFile) -Encoding UTF8
+Write-Log "  Written -> $allUsersFile"
 
 # --- Summary ------------------------------------------------------------------
 $check = $synced.Count + $prevSynced.Count + $cloudOnly.Count

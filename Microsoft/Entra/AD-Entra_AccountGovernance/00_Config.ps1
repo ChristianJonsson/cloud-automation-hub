@@ -74,12 +74,34 @@ $IncludeManagerLookup = $true
 
 # --- Multi-forest configuration -----------------------------------------------
 # List each AD forest name that should be included in the audit. The name is
-# used as a suffix on the AD export file (AD_AllUsers_<ForestName>.ndjson) and
+# used as a suffix on the AD export file (AD_AllUsers_<ForestName>_<RunFileSuffix>.ndjson) and
 # as a sub-directory label in run manifests. Single-forest environments use the
 # default entry. For multiple forests run 06_ExportADUsers.ps1 once per forest
 # (the orchestrator does this automatically).
 # Example: $Forests = @("corp.local", "subsidiary.com")
 $Forests = @("default")
+
+# --- Run file-suffix helpers --------------------------------------------------
+# Output filenames in this pipeline carry a per-run suffix '<base>_yyyyMMdd_HHmm.ndjson'
+# so they remain self-identifying when copied out of the timestamped run dir.
+# The orchestrator sets $RunFileSuffix once at run start; standalone script
+# runs derive it either from a fresh Get-Date or from the run dir's name.
+
+function Get-RunFileSuffix {
+    param([datetime]$RunDate = (Get-Date))
+    return $RunDate.ToString('yyyyMMdd_HHmm')
+}
+
+function ConvertTo-RunFileSuffix {
+    param([Parameter(Mandatory)] [string]$DirectoryName)
+    try {
+        $parsed = [datetime]::ParseExact($DirectoryName, 'yyyy-MM-dd_HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
+        return Get-RunFileSuffix -RunDate $parsed
+    }
+    catch {
+        return $null
+    }
+}
 
 # --- Config validation --------------------------------------------------------
 # Called by the orchestrator before any script runs. Can also be called manually

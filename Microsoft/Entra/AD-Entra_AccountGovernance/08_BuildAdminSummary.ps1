@@ -3,9 +3,9 @@
 # Purpose : Derive effective admins and an aggregate admin summary from the
 #           role and group exports. Pure transformation — no Graph calls.
 # Run on  : Any machine with access to the NDJSON output files
-# Output  : <RunOutputPath>\Entra_EffectiveAdmins.ndjson
-#           <RunOutputPath>\Entra_NonUserRoleHolders.ndjson
-#           <RunOutputPath>\Entra_AdminSummary.json
+# Output  : <RunOutputPath>\Entra_EffectiveAdmins_<RunFileSuffix>.ndjson
+#           <RunOutputPath>\Entra_NonUserRoleHolders_<RunFileSuffix>.ndjson
+#           <RunOutputPath>\Entra_AdminSummary_<RunFileSuffix>.json
 # Requires: 00_Config.ps1 and outputs from 03_ExportEntraUsers.ps1,
 #           04_ExportEntraRoles.ps1, 05_ExportEntraGroups.ps1
 #
@@ -253,16 +253,25 @@ if (-not (Get-Variable -Name BuildAdminSummary_TestMode -Scope Global -ErrorActi
         $RunOutputPath = $latestRun.FullName
         Write-Warning "No RunOutputPath set; using most recent run: $RunOutputPath"
     }
+    if (-not (Get-Variable -Name RunFileSuffix -ErrorAction SilentlyContinue) -or [string]::IsNullOrEmpty($RunFileSuffix)) {
+        $RunFileSuffix = ConvertTo-RunFileSuffix -DirectoryName (Split-Path $RunOutputPath -Leaf)
+        if ([string]::IsNullOrEmpty($RunFileSuffix)) {
+            $sample = Get-ChildItem -Path $RunOutputPath -Filter '*.ndjson' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($sample -and $sample.Name -match '_(\d{8}_\d{4})\.ndjson$') { $RunFileSuffix = $matches[1] }
+            else { throw "Could not determine RunFileSuffix for '$RunOutputPath'." }
+        }
+    }
     Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
     Write-Log '=== 08_BuildAdminSummary started ==='
 
-    $requiredInputs = @(
-        'Entra_AllUsers.ndjson',
-        'Entra_RoleDefinitions.ndjson',
-        'Entra_RoleAssignments.ndjson',
-        'Entra_Groups.ndjson',
-        'Entra_GroupMembers.ndjson'
-    )
+    $allUsersFile          = "Entra_AllUsers_$RunFileSuffix.ndjson"
+    $roleDefinitionsFile   = "Entra_RoleDefinitions_$RunFileSuffix.ndjson"
+    $roleAssignmentsFile   = "Entra_RoleAssignments_$RunFileSuffix.ndjson"
+    $roleEligibilitiesFile = "Entra_RoleEligibilities_$RunFileSuffix.ndjson"
+    $groupsFile            = "Entra_Groups_$RunFileSuffix.ndjson"
+    $groupMembersFile      = "Entra_GroupMembers_$RunFileSuffix.ndjson"
+
+    $requiredInputs = @($allUsersFile, $roleDefinitionsFile, $roleAssignmentsFile, $groupsFile, $groupMembersFile)
     foreach ($f in $requiredInputs) {
         $p = Join-Path $RunOutputPath $f
         if (-not (Test-Path $p)) {
@@ -281,12 +290,12 @@ if (-not (Get-Variable -Name BuildAdminSummary_TestMode -Scope Global -ErrorActi
     }
 
     Write-Log 'Loading inputs...'
-    $allUsers          = Read-NdjsonFile (Join-Path $RunOutputPath 'Entra_AllUsers.ndjson')
-    $roleDefinitions   = Read-NdjsonFile (Join-Path $RunOutputPath 'Entra_RoleDefinitions.ndjson')
-    $roleAssignments   = Read-NdjsonFile (Join-Path $RunOutputPath 'Entra_RoleAssignments.ndjson')
-    $roleEligibilities = Read-NdjsonFile (Join-Path $RunOutputPath 'Entra_RoleEligibilities.ndjson')
-    $groups            = Read-NdjsonFile (Join-Path $RunOutputPath 'Entra_Groups.ndjson')
-    $groupMembers      = Read-NdjsonFile (Join-Path $RunOutputPath 'Entra_GroupMembers.ndjson')
+    $allUsers          = Read-NdjsonFile (Join-Path $RunOutputPath $allUsersFile)
+    $roleDefinitions   = Read-NdjsonFile (Join-Path $RunOutputPath $roleDefinitionsFile)
+    $roleAssignments   = Read-NdjsonFile (Join-Path $RunOutputPath $roleAssignmentsFile)
+    $roleEligibilities = Read-NdjsonFile (Join-Path $RunOutputPath $roleEligibilitiesFile)
+    $groups            = Read-NdjsonFile (Join-Path $RunOutputPath $groupsFile)
+    $groupMembers      = Read-NdjsonFile (Join-Path $RunOutputPath $groupMembersFile)
     Write-Log "  Users: $($allUsers.Count)"
     Write-Log "  Role definitions: $($roleDefinitions.Count)"
     Write-Log "  Role assignments: $($roleAssignments.Count)"
@@ -307,9 +316,12 @@ if (-not (Get-Variable -Name BuildAdminSummary_TestMode -Scope Global -ErrorActi
     $effectiveAdmins    = $buildResult.EffectiveAdmins
     $nonUserRoleHolders = $buildResult.NonUserRoleHolders
 
-    $effectivePath = Join-Path $RunOutputPath 'Entra_EffectiveAdmins.ndjson'
-    $nonUserPath   = Join-Path $RunOutputPath 'Entra_NonUserRoleHolders.ndjson'
-    $summaryPath   = Join-Path $RunOutputPath 'Entra_AdminSummary.json'
+    $effectiveAdminsFile    = "Entra_EffectiveAdmins_$RunFileSuffix.ndjson"
+    $nonUserRoleHoldersFile = "Entra_NonUserRoleHolders_$RunFileSuffix.ndjson"
+    $adminSummaryFile       = "Entra_AdminSummary_$RunFileSuffix.json"
+    $effectivePath = Join-Path $RunOutputPath $effectiveAdminsFile
+    $nonUserPath   = Join-Path $RunOutputPath $nonUserRoleHoldersFile
+    $summaryPath   = Join-Path $RunOutputPath $adminSummaryFile
 
     if ($effectiveAdmins.Count -gt 0) {
         $effectiveAdmins | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 } |
@@ -318,7 +330,7 @@ if (-not (Get-Variable -Name BuildAdminSummary_TestMode -Scope Global -ErrorActi
         '' | Out-File $effectivePath -Encoding UTF8
         Clear-Content $effectivePath
     }
-    Write-Log "  Written -> Entra_EffectiveAdmins.ndjson ($($effectiveAdmins.Count) rows)"
+    Write-Log "  Written -> $effectiveAdminsFile ($($effectiveAdmins.Count) rows)"
 
     if ($nonUserRoleHolders.Count -gt 0) {
         $nonUserRoleHolders | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 } |
@@ -327,10 +339,10 @@ if (-not (Get-Variable -Name BuildAdminSummary_TestMode -Scope Global -ErrorActi
         '' | Out-File $nonUserPath -Encoding UTF8
         Clear-Content $nonUserPath
     }
-    Write-Log "  Written -> Entra_NonUserRoleHolders.ndjson ($($nonUserRoleHolders.Count) rows)"
+    Write-Log "  Written -> $nonUserRoleHoldersFile ($($nonUserRoleHolders.Count) rows)"
 
     $buildResult.Summary | ConvertTo-Json -Depth 5 | Out-File $summaryPath -Encoding UTF8
-    Write-Log '  Written -> Entra_AdminSummary.json'
+    Write-Log "  Written -> $adminSummaryFile"
 
     Write-Log '=== 08_BuildAdminSummary complete ==='
     $totals = $buildResult.Summary.Totals

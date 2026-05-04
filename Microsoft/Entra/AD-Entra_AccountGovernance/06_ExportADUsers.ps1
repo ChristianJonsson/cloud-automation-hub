@@ -2,7 +2,7 @@
 # 06_ExportADUsers.ps1
 # Purpose : Export all AD user accounts for cross-reference against Entra buckets
 # Run on  : Domain-joined machine with RSAT AD module
-# Output  : <RunOutputPath>\AD_AllUsers_<ForestName>.ndjson
+# Output  : <RunOutputPath>\AD_AllUsers_<ForestName>_<RunFileSuffix>.ndjson
 # Requires: 00_Config.ps1 (shared configuration)
 #
 # Approach:
@@ -28,8 +28,14 @@ Import-Module $loggingModulePath -Force -ErrorAction Stop
 
 # --- Run output directory -----------------------------------------------------
 if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
-    $RunOutputPath = Join-Path $OutputPath (Get-Date -Format 'yyyy-MM-dd_HHmmss')
+    $standaloneDate = Get-Date
+    $RunOutputPath = Join-Path $OutputPath $standaloneDate.ToString('yyyy-MM-dd_HHmmss')
+    $RunFileSuffix = Get-RunFileSuffix -RunDate $standaloneDate
     New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
+}
+if (-not (Get-Variable -Name RunFileSuffix -ErrorAction SilentlyContinue) -or [string]::IsNullOrEmpty($RunFileSuffix)) {
+    $RunFileSuffix = ConvertTo-RunFileSuffix -DirectoryName (Split-Path $RunOutputPath -Leaf)
+    if ([string]::IsNullOrEmpty($RunFileSuffix)) { $RunFileSuffix = Get-RunFileSuffix }
 }
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
 Write-Log "=== 06_ExportADUsers started (ForestName: $ForestName, ImmutableIdMethod: $ImmutableIdMethod) ==="
@@ -170,7 +176,8 @@ try {
 
 Write-Log "Fetched $($adUsers.Count) AD users. Processing..."
 
-$outputFile = Join-Path $RunOutputPath "AD_AllUsers_${ForestName}.ndjson"
+$adOutputFileName = "AD_AllUsers_${ForestName}_${RunFileSuffix}.ndjson"
+$outputFile = Join-Path $RunOutputPath $adOutputFileName
 
 $adUsers | ForEach-Object {
     # Resolve ObjectGUID once — depending on AD module version, ObjectGUID is
@@ -300,4 +307,4 @@ $adUsers | ForEach-Object {
     Out-File $outputFile -Encoding UTF8
 
 Write-Log "=== 06_ExportADUsers complete ==="
-Write-Log "  Written -> AD_AllUsers_${ForestName}.ndjson ($($adUsers.Count) users)"
+Write-Log "  Written -> $adOutputFileName ($($adUsers.Count) users)"

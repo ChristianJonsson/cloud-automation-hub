@@ -3,9 +3,9 @@
 # Purpose : Export Entra directory role definitions and assignments (active +
 #           PIM-eligible) for downstream admin summary and reporting.
 # Run on  : Any machine with Microsoft.Graph.Identity.Governance available
-# Output  : <RunOutputPath>\Entra_RoleDefinitions.ndjson
-#           <RunOutputPath>\Entra_RoleAssignments.ndjson
-#           <RunOutputPath>\Entra_RoleEligibilities.ndjson
+# Output  : <RunOutputPath>\Entra_RoleDefinitions_<RunFileSuffix>.ndjson
+#           <RunOutputPath>\Entra_RoleAssignments_<RunFileSuffix>.ndjson
+#           <RunOutputPath>\Entra_RoleEligibilities_<RunFileSuffix>.ndjson
 # Requires: 00_Config.ps1 (shared configuration)
 #
 # PIM behaviour:
@@ -28,8 +28,14 @@ Import-Module $graphDataModulePath -Force -ErrorAction Stop
 
 # --- Run output directory -----------------------------------------------------
 if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
-    $RunOutputPath = Join-Path $OutputPath (Get-Date -Format 'yyyy-MM-dd_HHmmss')
+    $standaloneDate = Get-Date
+    $RunOutputPath = Join-Path $OutputPath $standaloneDate.ToString('yyyy-MM-dd_HHmmss')
+    $RunFileSuffix = Get-RunFileSuffix -RunDate $standaloneDate
     New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
+}
+if (-not (Get-Variable -Name RunFileSuffix -ErrorAction SilentlyContinue) -or [string]::IsNullOrEmpty($RunFileSuffix)) {
+    $RunFileSuffix = ConvertTo-RunFileSuffix -DirectoryName (Split-Path $RunOutputPath -Leaf)
+    if ([string]::IsNullOrEmpty($RunFileSuffix)) { $RunFileSuffix = Get-RunFileSuffix }
 }
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
 Write-Log "=== 04_ExportEntraRoles started (IncludePimEligibilities: $IncludePimEligibilities) ==="
@@ -118,9 +124,10 @@ $roleDefinitions = Invoke-GraphOperationWithRetry -OperationName 'Get-MgRoleMana
 }
 Write-Log "  Count: $($roleDefinitions.Count)"
 
+$roleDefinitionsFile = "Entra_RoleDefinitions_$RunFileSuffix.ndjson"
 $roleDefinitions | ForEach-Object { Flatten-RoleDefinition $_ | ConvertTo-Json -Compress -Depth 5 } |
-    Out-File (Join-Path $RunOutputPath 'Entra_RoleDefinitions.ndjson') -Encoding UTF8
-Write-Log '  Written -> Entra_RoleDefinitions.ndjson'
+    Out-File (Join-Path $RunOutputPath $roleDefinitionsFile) -Encoding UTF8
+Write-Log "  Written -> $roleDefinitionsFile"
 
 # --- 2. Active role assignments -----------------------------------------------
 Write-Log 'Fetching active directory role assignments...'
@@ -129,13 +136,15 @@ $roleAssignments = Invoke-GraphOperationWithRetry -OperationName 'Get-MgRoleMana
 }
 Write-Log "  Count: $($roleAssignments.Count)"
 
+$roleAssignmentsFile = "Entra_RoleAssignments_$RunFileSuffix.ndjson"
 $roleAssignments | ForEach-Object { Flatten-RoleAssignment $_ 'Active' | ConvertTo-Json -Compress -Depth 5 } |
-    Out-File (Join-Path $RunOutputPath 'Entra_RoleAssignments.ndjson') -Encoding UTF8
-Write-Log '  Written -> Entra_RoleAssignments.ndjson'
+    Out-File (Join-Path $RunOutputPath $roleAssignmentsFile) -Encoding UTF8
+Write-Log "  Written -> $roleAssignmentsFile"
 
 # --- 3. PIM eligible role assignments -----------------------------------------
 $roleEligibilities = @()
-$eligibilitiesPath = Join-Path $RunOutputPath 'Entra_RoleEligibilities.ndjson'
+$roleEligibilitiesFile = "Entra_RoleEligibilities_$RunFileSuffix.ndjson"
+$eligibilitiesPath = Join-Path $RunOutputPath $roleEligibilitiesFile
 
 if (-not $IncludePimEligibilities) {
     Write-Log 'Skipping PIM eligibility query (IncludePimEligibilities = $false). Writing empty file.'
@@ -158,14 +167,14 @@ if (-not $IncludePimEligibilities) {
             Flatten-RoleAssignment $_ 'Eligible' $extras | ConvertTo-Json -Compress -Depth 5
         } | Out-File $eligibilitiesPath -Encoding UTF8
 
-        Write-Log '  Written -> Entra_RoleEligibilities.ndjson'
+        Write-Log "  Written -> $roleEligibilitiesFile"
     }
     catch {
         $msg = $_.Exception.Message
         $isLicenseOrAuth = $msg -match 'license|authorization_requestdenied|forbidden|tenant does not have'
         if ($isLicenseOrAuth) {
             Write-Log "  WARNING: PIM eligibility query failed (likely no Entra ID P2 license or insufficient permissions): $msg"
-            Write-Log '  Writing empty Entra_RoleEligibilities.ndjson and continuing.'
+            Write-Log "  Writing empty $roleEligibilitiesFile and continuing."
             '' | Out-File $eligibilitiesPath -Encoding UTF8
             Clear-Content $eligibilitiesPath
             $roleEligibilities = @()

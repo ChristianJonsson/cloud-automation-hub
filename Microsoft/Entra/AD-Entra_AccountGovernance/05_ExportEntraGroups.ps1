@@ -4,9 +4,9 @@
 #           Direct (non-transitive) membership only — step 08 handles nested
 #           expansion when resolving effective admins.
 # Run on  : Any machine with Microsoft.Graph.Groups available
-# Output  : <RunOutputPath>\Entra_Groups.ndjson
-#           <RunOutputPath>\Entra_GroupMembers.ndjson
-#           <RunOutputPath>\Entra_GroupOwners.ndjson
+# Output  : <RunOutputPath>\Entra_Groups_<RunFileSuffix>.ndjson
+#           <RunOutputPath>\Entra_GroupMembers_<RunFileSuffix>.ndjson
+#           <RunOutputPath>\Entra_GroupOwners_<RunFileSuffix>.ndjson
 # Requires: 00_Config.ps1 (shared configuration)
 #
 # Throttling note:
@@ -33,8 +33,14 @@ Import-Module $graphDataModulePath -Force -ErrorAction Stop
 
 # --- Run output directory -----------------------------------------------------
 if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
-    $RunOutputPath = Join-Path $OutputPath (Get-Date -Format 'yyyy-MM-dd_HHmmss')
+    $standaloneDate = Get-Date
+    $RunOutputPath = Join-Path $OutputPath $standaloneDate.ToString('yyyy-MM-dd_HHmmss')
+    $RunFileSuffix = Get-RunFileSuffix -RunDate $standaloneDate
     New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
+}
+if (-not (Get-Variable -Name RunFileSuffix -ErrorAction SilentlyContinue) -or [string]::IsNullOrEmpty($RunFileSuffix)) {
+    $RunFileSuffix = ConvertTo-RunFileSuffix -DirectoryName (Split-Path $RunOutputPath -Leaf)
+    if ([string]::IsNullOrEmpty($RunFileSuffix)) { $RunFileSuffix = Get-RunFileSuffix }
 }
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
 Write-Log '=== 05_ExportEntraGroups started ==='
@@ -187,13 +193,17 @@ $allGroups = $allGroups | Sort-Object @{Expression = { [bool]$_.IsAssignableToRo
 
 # --- 2. Write group inventory -------------------------------------------------
 Write-Log 'Writing group inventory...'
+$groupsFile      = "Entra_Groups_$RunFileSuffix.ndjson"
+$groupMembersFile = "Entra_GroupMembers_$RunFileSuffix.ndjson"
+$groupOwnersFile  = "Entra_GroupOwners_$RunFileSuffix.ndjson"
+
 $allGroups | ForEach-Object { Flatten-Group $_ | ConvertTo-Json -Compress -Depth 5 } |
-    Out-File (Join-Path $RunOutputPath 'Entra_Groups.ndjson') -Encoding UTF8
-Write-Log '  Written -> Entra_Groups.ndjson'
+    Out-File (Join-Path $RunOutputPath $groupsFile) -Encoding UTF8
+Write-Log "  Written -> $groupsFile"
 
 # --- 3. Members and owners ----------------------------------------------------
-$membersPath = Join-Path $RunOutputPath 'Entra_GroupMembers.ndjson'
-$ownersPath  = Join-Path $RunOutputPath 'Entra_GroupOwners.ndjson'
+$membersPath = Join-Path $RunOutputPath $groupMembersFile
+$ownersPath  = Join-Path $RunOutputPath $groupOwnersFile
 
 if (Test-Path $membersPath) { Remove-Item $membersPath -Force }
 if (Test-Path $ownersPath)  { Remove-Item $ownersPath  -Force }
@@ -260,8 +270,8 @@ foreach ($group in $allGroups) {
 if (-not (Test-Path $membersPath)) { '' | Out-File $membersPath -Encoding UTF8; Clear-Content $membersPath }
 if (-not (Test-Path $ownersPath))  { '' | Out-File $ownersPath  -Encoding UTF8; Clear-Content $ownersPath }
 
-Write-Log '  Written -> Entra_GroupMembers.ndjson'
-Write-Log '  Written -> Entra_GroupOwners.ndjson'
+Write-Log "  Written -> $groupMembersFile"
+Write-Log "  Written -> $groupOwnersFile"
 
 # --- Summary ------------------------------------------------------------------
 $totalElapsed = (Get-Date) - $startTime
