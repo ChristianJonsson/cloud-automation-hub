@@ -57,6 +57,8 @@ $properties = @(
     "LastPasswordChangeDateTime", "PasswordPolicies",
     "SignInSessionsValidFromDateTime",
     "ExternalUserState", "ExternalUserStateChangeDateTime",
+    "AgeGroup", "ConsentProvidedForMinor", "LegalAgeGroupClassification",
+    "CreationType",
     "IsResourceAccount", "IsManagementRestricted",
     "Department", "JobTitle", "CompanyName", "EmployeeId", "EmployeeType",
     "EmployeeHireDate", "EmployeeOrgData",
@@ -124,6 +126,12 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
         ExternalUserState                   = $user.ExternalUserState
         ExternalUserStateChangeDateTime     = $user.ExternalUserStateChangeDateTime
 
+        # Compliance / age + consent (GDPR Art. 8 / education tenant)
+        AgeGroup                            = $user.AgeGroup
+        ConsentProvidedForMinor             = $user.ConsentProvidedForMinor
+        LegalAgeGroupClassification         = $user.LegalAgeGroupClassification
+        CreationType                        = $user.CreationType
+
         # Organisation
         Department                          = $user.Department
         JobTitle                            = $user.JobTitle
@@ -142,9 +150,10 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
         AssignedLicenses                    = @($user.AssignedLicenses | ForEach-Object { $_.SkuId })
         AssignedPlans                       = @($user.AssignedPlans | ForEach-Object {
                                                 [PSCustomObject]@{
-                                                    Service         = $_.Service
-                                                    ServicePlanId   = $_.ServicePlanId
+                                                    Service          = $_.Service
+                                                    ServicePlanId    = $_.ServicePlanId
                                                     CapabilityStatus = $_.CapabilityStatus
+                                                    AssignedDateTime = $_.AssignedDateTime
                                                 }
                                               })
 
