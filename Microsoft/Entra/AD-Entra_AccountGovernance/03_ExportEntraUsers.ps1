@@ -53,7 +53,7 @@ $properties = @(
     "Id", "DisplayName", "GivenName", "Surname",
     "UserPrincipalName", "Mail", "MailNickname", "UserType",
     "OtherMails", "ProxyAddresses", "Identities",
-    "AccountEnabled", "CreatedDateTime", "DeletedDateTime",
+    "AccountEnabled", "ShowInAddressList", "CreatedDateTime", "DeletedDateTime",
     "LastPasswordChangeDateTime", "PasswordPolicies",
     "SignInSessionsValidFromDateTime",
     "ExternalUserState", "ExternalUserStateChangeDateTime",
@@ -112,6 +112,7 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
 
         # Account state
         AccountEnabled                      = $user.AccountEnabled
+        ShowInAddressList                   = $user.ShowInAddressList
         IsResourceAccount                   = $user.IsResourceAccount
         IsManagementRestricted              = $user.IsManagementRestricted
         CreatedDateTime                     = $user.CreatedDateTime
@@ -121,6 +122,7 @@ function Flatten-User ($user, [string]$BucketLabel = $null) {
         SignInSessionsValidFromDateTime     = $user.SignInSessionsValidFromDateTime
         LastSignInDateTime                  = $user.SignInActivity.LastSignInDateTime
         LastNonInteractiveSignInDateTime    = $user.SignInActivity.LastNonInteractiveSignInDateTime
+        LastSuccessfulSignInDateTime        = $user.SignInActivity.LastSuccessfulSignInDateTime
 
         # External / guest
         ExternalUserState                   = $user.ExternalUserState

@@ -86,29 +86,36 @@ function New-EffectiveAdminRow {
         [int]$ThresholdDays
     )
 
-    $userId      = if ($null -ne $User -and $User.Id) { $User.Id } else { $PrincipalId }
-    $upn         = if ($null -ne $User -and $User.PSObject.Properties['UserPrincipalName'] -and $User.UserPrincipalName) { $User.UserPrincipalName } else { $PrincipalUpn }
-    $displayName = if ($null -ne $User -and $User.PSObject.Properties['DisplayName'] -and $User.DisplayName)         { $User.DisplayName }       else { $PrincipalDisplayName }
-    $userType    = if ($null -ne $User -and $User.PSObject.Properties['UserType'])              { $User.UserType }              else { $null }
-    $synced      = if ($null -ne $User -and $User.PSObject.Properties['OnPremisesSyncEnabled']) { [bool]$User.OnPremisesSyncEnabled } else { $false }
-    $enabled     = if ($null -ne $User -and $User.PSObject.Properties['AccountEnabled'])        { $User.AccountEnabled }        else { $null }
-    $lastSignIn  = if ($null -ne $User -and $User.PSObject.Properties['LastSignInDateTime'])    { $User.LastSignInDateTime }    else { $null }
-    $isStale     = Resolve-EffectiveStaleness -LastSignInDateTime $lastSignIn -Now $Now -ThresholdDays $ThresholdDays
+    $userId           = if ($null -ne $User -and $User.Id) { $User.Id } else { $PrincipalId }
+    $upn              = if ($null -ne $User -and $User.PSObject.Properties['UserPrincipalName'] -and $User.UserPrincipalName) { $User.UserPrincipalName } else { $PrincipalUpn }
+    $displayName      = if ($null -ne $User -and $User.PSObject.Properties['DisplayName'] -and $User.DisplayName)         { $User.DisplayName }       else { $PrincipalDisplayName }
+    $userType         = if ($null -ne $User -and $User.PSObject.Properties['UserType'])                       { $User.UserType }                       else { $null }
+    $synced           = if ($null -ne $User -and $User.PSObject.Properties['OnPremisesSyncEnabled'])          { [bool]$User.OnPremisesSyncEnabled }    else { $false }
+    $enabled          = if ($null -ne $User -and $User.PSObject.Properties['AccountEnabled'])                 { $User.AccountEnabled }                 else { $null }
+    $lastSignIn       = if ($null -ne $User -and $User.PSObject.Properties['LastSignInDateTime'])             { $User.LastSignInDateTime }             else { $null }
+    $lastSuccessful   = if ($null -ne $User -and $User.PSObject.Properties['LastSuccessfulSignInDateTime'])   { $User.LastSuccessfulSignInDateTime }   else { $null }
+
+    # Prefer successful sign-in for staleness — failed-attempt activity should
+    # not mask a stale account. Fall back to LastSignInDateTime when the
+    # successful timestamp is null (older Graph data, never-signed-in users).
+    $effectiveSignIn = if (-not [string]::IsNullOrWhiteSpace("$lastSuccessful")) { $lastSuccessful } else { $lastSignIn }
+    $isStale         = Resolve-EffectiveStaleness -LastSignInDateTime $effectiveSignIn -Now $Now -ThresholdDays $ThresholdDays
 
     [PSCustomObject][ordered]@{
-        UserId                = $userId
-        UserPrincipalName     = $upn
-        DisplayName           = $displayName
-        UserType              = $userType
-        OnPremisesSyncEnabled = $synced
-        AccountEnabled        = $enabled
-        LastSignInDateTime    = $lastSignIn
-        RoleId                = $RoleId
-        RoleName              = $RoleName
-        AssignmentPath        = $AssignmentPath
-        AssignmentType        = $AssignmentType
-        Scope                 = $Scope
-        IsStale               = $isStale
+        UserId                       = $userId
+        UserPrincipalName            = $upn
+        DisplayName                  = $displayName
+        UserType                     = $userType
+        OnPremisesSyncEnabled        = $synced
+        AccountEnabled               = $enabled
+        LastSignInDateTime           = $lastSignIn
+        LastSuccessfulSignInDateTime = $lastSuccessful
+        RoleId                       = $RoleId
+        RoleName                     = $RoleName
+        AssignmentPath               = $AssignmentPath
+        AssignmentType               = $AssignmentType
+        Scope                        = $Scope
+        IsStale                      = $isStale
     }
 }
 

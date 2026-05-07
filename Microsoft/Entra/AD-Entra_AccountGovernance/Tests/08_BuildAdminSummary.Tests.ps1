@@ -168,6 +168,78 @@ Describe 'Build-AdminSummary' {
             $empty.Summary.Totals.EffectiveAdminRows | Should -Be 0
         }
     }
+
+    Context 'Staleness prefers LastSuccessfulSignInDateTime over LastSignInDateTime' {
+        BeforeAll {
+            $script:staleNow = [datetime]'2026-05-07T12:00:00Z'
+
+            $script:staleUsers = @(
+                # Recent successful, stale interactive — should NOT be stale (prefers successful)
+                [PSCustomObject]@{ Id = 'u-fresh-success'; UserPrincipalName = 'fresh@x'; DisplayName = 'Fresh';
+                    UserType = 'Member'; OnPremisesSyncEnabled = $false; AccountEnabled = $true;
+                    LastSignInDateTime = '2025-01-01T00:00:00Z'; LastSuccessfulSignInDateTime = '2026-05-01T00:00:00Z' },
+
+                # Stale successful, recent interactive — SHOULD be stale (prefers successful)
+                [PSCustomObject]@{ Id = 'u-failed-only'; UserPrincipalName = 'failed@x'; DisplayName = 'Failed';
+                    UserType = 'Member'; OnPremisesSyncEnabled = $false; AccountEnabled = $true;
+                    LastSignInDateTime = '2026-05-01T00:00:00Z'; LastSuccessfulSignInDateTime = '2025-01-01T00:00:00Z' },
+
+                # Successful null, recent interactive — should NOT be stale (falls back)
+                [PSCustomObject]@{ Id = 'u-fallback-fresh'; UserPrincipalName = 'fb@x'; DisplayName = 'Fallback';
+                    UserType = 'Member'; OnPremisesSyncEnabled = $false; AccountEnabled = $true;
+                    LastSignInDateTime = '2026-05-01T00:00:00Z'; LastSuccessfulSignInDateTime = $null },
+
+                # Both null — SHOULD be stale
+                [PSCustomObject]@{ Id = 'u-never'; UserPrincipalName = 'never@x'; DisplayName = 'Never';
+                    UserType = 'Member'; OnPremisesSyncEnabled = $false; AccountEnabled = $true;
+                    LastSignInDateTime = $null; LastSuccessfulSignInDateTime = $null }
+            )
+
+            $script:staleRoles = @(
+                [PSCustomObject]@{ Id = 'role-ga'; DisplayName = 'Global Administrator' }
+            )
+
+            $script:staleAssignments = @(
+                [PSCustomObject]@{ Id='ra-1'; RoleDefinitionId='role-ga'; PrincipalId='u-fresh-success';   PrincipalType='User'; AssignmentType='Active'; DirectoryScopeId='/' }
+                [PSCustomObject]@{ Id='ra-2'; RoleDefinitionId='role-ga'; PrincipalId='u-failed-only';     PrincipalType='User'; AssignmentType='Active'; DirectoryScopeId='/' }
+                [PSCustomObject]@{ Id='ra-3'; RoleDefinitionId='role-ga'; PrincipalId='u-fallback-fresh';  PrincipalType='User'; AssignmentType='Active'; DirectoryScopeId='/' }
+                [PSCustomObject]@{ Id='ra-4'; RoleDefinitionId='role-ga'; PrincipalId='u-never';           PrincipalType='User'; AssignmentType='Active'; DirectoryScopeId='/' }
+            )
+
+            $script:staleResult = Build-AdminSummary `
+                -Users $script:staleUsers `
+                -Roles $script:staleRoles `
+                -RoleAssignments $script:staleAssignments `
+                -Groups @() -GroupMembers @() -RoleEligibilities @() `
+                -StaleAdminThresholdDays 90 -Now $script:staleNow
+        }
+
+        It 'flags failed-only user as stale even though LastSignInDateTime is recent' {
+            $row = $script:staleResult.EffectiveAdmins | Where-Object { $_.UserId -eq 'u-failed-only' }
+            $row.IsStale | Should -BeTrue
+        }
+
+        It 'does not flag fresh-success user as stale even though LastSignInDateTime is old' {
+            $row = $script:staleResult.EffectiveAdmins | Where-Object { $_.UserId -eq 'u-fresh-success' }
+            $row.IsStale | Should -BeFalse
+        }
+
+        It 'falls back to LastSignInDateTime when LastSuccessfulSignInDateTime is null' {
+            $row = $script:staleResult.EffectiveAdmins | Where-Object { $_.UserId -eq 'u-fallback-fresh' }
+            $row.IsStale | Should -BeFalse
+        }
+
+        It 'flags never-signed-in user as stale' {
+            $row = $script:staleResult.EffectiveAdmins | Where-Object { $_.UserId -eq 'u-never' }
+            $row.IsStale | Should -BeTrue
+        }
+
+        It 'emits both raw timestamps in the row for traceability' {
+            $row = $script:staleResult.EffectiveAdmins | Where-Object { $_.UserId -eq 'u-fresh-success' }
+            $row.LastSignInDateTime           | Should -Be '2025-01-01T00:00:00Z'
+            $row.LastSuccessfulSignInDateTime | Should -Be '2026-05-01T00:00:00Z'
+        }
+    }
 }
 
 Describe 'Get-TransitiveUserMembers' {
