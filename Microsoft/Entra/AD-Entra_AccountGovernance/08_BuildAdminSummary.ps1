@@ -83,7 +83,8 @@ function New-EffectiveAdminRow {
         [string]$AssignmentType,
         [string]$Scope,
         [datetime]$Now,
-        [int]$ThresholdDays
+        [int]$ThresholdDays,
+        [bool]$TrackStaleness = $true
     )
 
     $userId           = if ($null -ne $User -and $User.Id) { $User.Id } else { $PrincipalId }
@@ -98,8 +99,12 @@ function New-EffectiveAdminRow {
     # Prefer successful sign-in for staleness — failed-attempt activity should
     # not mask a stale account. Fall back to LastSignInDateTime when the
     # successful timestamp is null (older Graph data, never-signed-in users).
+    # When staleness wasn't tracked at all (sign-in activity not fetched),
+    # IsStale is null so consumers know the value is unknown rather than false.
     $effectiveSignIn = if (-not [string]::IsNullOrWhiteSpace("$lastSuccessful")) { $lastSuccessful } else { $lastSignIn }
-    $isStale         = Resolve-EffectiveStaleness -LastSignInDateTime $effectiveSignIn -Now $Now -ThresholdDays $ThresholdDays
+    $isStale         = if ($TrackStaleness) {
+                           Resolve-EffectiveStaleness -LastSignInDateTime $effectiveSignIn -Now $Now -ThresholdDays $ThresholdDays
+                       } else { $null }
 
     [PSCustomObject][ordered]@{
         UserId                       = $userId
@@ -128,7 +133,8 @@ function Build-AdminSummary {
         [Parameter(Mandatory)] [AllowEmptyCollection()] [array]$Groups,
         [AllowEmptyCollection()] [array]$GroupMembers = @(),
         [int]$StaleAdminThresholdDays = 90,
-        [datetime]$Now = (Get-Date)
+        [datetime]$Now = (Get-Date),
+        [bool]$TrackStaleness = $true
     )
 
     $usersById  = @{}
@@ -169,7 +175,8 @@ function Build-AdminSummary {
                                              -AssignmentType $a.AssignmentType `
                                              -Scope $a.DirectoryScopeId `
                                              -Now $Now `
-                                             -ThresholdDays $StaleAdminThresholdDays
+                                             -ThresholdDays $StaleAdminThresholdDays `
+                                             -TrackStaleness $TrackStaleness
                 $effectiveAdmins.Add($row)
             }
             'Group' {
@@ -188,7 +195,8 @@ function Build-AdminSummary {
                                                  -AssignmentType $a.AssignmentType `
                                                  -Scope $a.DirectoryScopeId `
                                                  -Now $Now `
-                                                 -ThresholdDays $StaleAdminThresholdDays
+                                                 -ThresholdDays $StaleAdminThresholdDays `
+                                                 -TrackStaleness $TrackStaleness
                     $effectiveAdmins.Add($row)
                 }
             }
@@ -210,7 +218,7 @@ function Build-AdminSummary {
     $nonUserArr     = $nonUserRoleHolders.ToArray()
 
     $uniqueAdminIds = @($effectiveArr | ForEach-Object { $_.UserId } | Select-Object -Unique)
-    $staleUserIds   = @($effectiveArr | Where-Object { $_.IsStale }              | ForEach-Object { $_.UserId } | Select-Object -Unique)
+    $staleUserIds   = @($effectiveArr | Where-Object { $_.IsStale -eq $true }   | ForEach-Object { $_.UserId } | Select-Object -Unique)
     $syncedUserIds  = @($effectiveArr | Where-Object { $_.OnPremisesSyncEnabled } | ForEach-Object { $_.UserId } | Select-Object -Unique)
     $cloudUserIds   = @($effectiveArr | Where-Object { -not $_.OnPremisesSyncEnabled } | ForEach-Object { $_.UserId } | Select-Object -Unique)
     $guestUserIds   = @($effectiveArr | Where-Object { $_.UserType -eq 'Guest' } | ForEach-Object { $_.UserId } | Select-Object -Unique)
@@ -232,7 +240,7 @@ function Build-AdminSummary {
             EligibleAssignments = @($effectiveArr | Where-Object { $_.AssignmentType -eq 'Eligible' }).Count
             DirectAssignments   = @($effectiveArr | Where-Object { $_.AssignmentPath -eq 'Direct' }).Count
             ViaGroupAssignments = @($effectiveArr | Where-Object { $_.AssignmentPath -like 'ViaGroup:*' }).Count
-            StaleAdminUsers     = $staleUserIds.Count
+            StaleAdminUsers     = if ($TrackStaleness) { $staleUserIds.Count } else { $null }
             SyncedAdminUsers    = $syncedUserIds.Count
             CloudOnlyAdminUsers = $cloudUserIds.Count
             GuestAdminUsers     = $guestUserIds.Count
@@ -311,6 +319,7 @@ if (-not (Get-Variable -Name BuildAdminSummary_TestMode -Scope Global -ErrorActi
     Write-Log "  Group member rows: $($groupMembers.Count)"
 
     Write-Log 'Building admin summary...'
+    $trackStaleness = if (Get-Variable -Name IncludeSignInActivity -ErrorAction SilentlyContinue) { [bool]$IncludeSignInActivity } else { $true }
     $buildResult = Build-AdminSummary `
         -Users $allUsers `
         -Roles $roleDefinitions `
@@ -318,7 +327,8 @@ if (-not (Get-Variable -Name BuildAdminSummary_TestMode -Scope Global -ErrorActi
         -RoleEligibilities $roleEligibilities `
         -Groups $groups `
         -GroupMembers $groupMembers `
-        -StaleAdminThresholdDays $StaleAdminThresholdDays
+        -StaleAdminThresholdDays $StaleAdminThresholdDays `
+        -TrackStaleness $trackStaleness
 
     $effectiveAdmins    = $buildResult.EffectiveAdmins
     $nonUserRoleHolders = $buildResult.NonUserRoleHolders

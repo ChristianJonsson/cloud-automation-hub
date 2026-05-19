@@ -240,6 +240,35 @@ Describe 'Build-AdminSummary' {
             $row.LastSuccessfulSignInDateTime | Should -Be '2026-05-01T00:00:00Z'
         }
     }
+
+    Context 'TrackStaleness = $false (sign-in activity not fetched)' {
+        BeforeAll {
+            $script:noStaleResult = Build-AdminSummary `
+                -Users $script:users `
+                -Roles $script:roles `
+                -RoleAssignments $script:assignments `
+                -RoleEligibilities $script:eligibilities `
+                -Groups $script:groups `
+                -GroupMembers $script:groupMembers `
+                -StaleAdminThresholdDays 90 `
+                -Now $script:fixedNow `
+                -TrackStaleness $false
+        }
+
+        It 'emits IsStale = $null on every effective-admin row' {
+            $allNull = $script:noStaleResult.EffectiveAdmins | ForEach-Object { $null -eq $_.IsStale }
+            $allNull -contains $false | Should -BeFalse
+        }
+
+        It 'emits StaleAdminUsers = $null in the summary (rather than misleading count)' {
+            $script:noStaleResult.Summary.Totals.StaleAdminUsers | Should -BeNullOrEmpty
+        }
+
+        It 'still computes the other admin counts correctly' {
+            $script:noStaleResult.Summary.Totals.EffectiveAdminRows | Should -Be 6
+            $script:noStaleResult.Summary.Totals.UniqueAdminUsers   | Should -Be 5
+        }
+    }
 }
 
 Describe 'Get-TransitiveUserMembers' {

@@ -69,6 +69,15 @@ $RunFileSuffix = Get-RunFileSuffix -RunDate $runStartDate
 $RunOutputPath = Join-Path $OutputPath $RunTimestamp
 New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
 
+# Sentinel that tells child scripts the orchestrator is in charge of the run
+# path. Without this, child scripts run via dot-source might inherit a stale
+# $RunOutputPath from a previous standalone run in the same PowerShell session
+# and silently write today's output into yesterday's folder. Cleared in finally
+# so a failed orchestrator run doesn't leave the flag set.
+$Global:GovernanceOrchestratorActive = $true
+
+try {
+
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
 Write-Log "================================================================"
 Write-Log "AccountGovernance Audit started — RunTimestamp: $RunTimestamp"
@@ -223,3 +232,8 @@ Write-Log "================================================================"
 Write-Log "AccountGovernance Audit complete — $([Math]::Round(($auditEnd - $auditStart).TotalMinutes, 1)) minutes"
 Write-Log "Output: $RunOutputPath"
 Write-Log "================================================================"
+
+}
+finally {
+    Remove-Variable -Name GovernanceOrchestratorActive -Scope Global -ErrorAction SilentlyContinue
+}

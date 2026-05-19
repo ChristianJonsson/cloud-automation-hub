@@ -32,16 +32,10 @@ Import-Module $graphConnModulePath -Force -ErrorAction Stop
 Import-Module $graphDataModulePath -Force -ErrorAction Stop
 
 # --- Run output directory -----------------------------------------------------
-if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
-    $standaloneDate = Get-Date
-    $RunOutputPath = Join-Path $OutputPath $standaloneDate.ToString('yyyy-MM-dd_HHmmss')
-    $RunFileSuffix = Get-RunFileSuffix -RunDate $standaloneDate
-    New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
-}
-if (-not (Get-Variable -Name RunFileSuffix -ErrorAction SilentlyContinue) -or [string]::IsNullOrEmpty($RunFileSuffix)) {
-    $RunFileSuffix = ConvertTo-RunFileSuffix -DirectoryName (Split-Path $RunOutputPath -Leaf)
-    if ([string]::IsNullOrEmpty($RunFileSuffix)) { $RunFileSuffix = Get-RunFileSuffix }
-}
+$resolvedRun  = Resolve-RunOutputPath -OutputPathRoot $OutputPath `
+                                      -ExistingPath (Get-Variable -Name RunOutputPath -ValueOnly -ErrorAction SilentlyContinue)
+$RunOutputPath = $resolvedRun.RunOutputPath
+$RunFileSuffix = $resolvedRun.RunFileSuffix
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
 Write-Log '=== 05_ExportEntraGroups started ==='
 

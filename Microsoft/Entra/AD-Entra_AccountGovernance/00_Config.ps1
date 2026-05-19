@@ -72,6 +72,18 @@ $StaleAdminThresholdDays = 90
 # null but the output schema stays stable.
 $IncludeManagerLookup = $true
 
+# --- Sign-in activity (used by 03_ExportEntraUsers.ps1, 08_BuildAdminSummary.ps1)
+# When $true, the user export requests the SignInActivity property and
+# AuditLog.Read.All scope. Reading SignInActivity is gated by Microsoft Graph
+# and requires the calling user to hold one of: Reports Reader, Security
+# Reader, Global Reader, Helpdesk/Auth/Priv Auth Administrator, User
+# Administrator, or Global Administrator. Some tenants gate it more strictly.
+# Set to $false when your account / tenant configuration cannot satisfy the
+# role gate — the three sign-in timestamp fields emit as null and step 08's
+# staleness detection is skipped (IsStale and StaleAdminUsers become null
+# rather than reporting misleading "all admins are stale" results).
+$IncludeSignInActivity = $false
+
 # --- Multi-forest configuration -----------------------------------------------
 # List each AD forest name that should be included in the audit. The name is
 # used as a suffix on the AD export file (AD_AllUsers_<ForestName>_<RunFileSuffix>.ndjson) and
@@ -100,6 +112,75 @@ function ConvertTo-RunFileSuffix {
     }
     catch {
         return $null
+    }
+}
+
+# Decides whether to reuse an inherited $RunOutputPath or create a fresh one.
+#
+# Bug guarded against: when an export script is dot-sourced repeatedly in a
+# long-lived PowerShell session (e.g. VS Code's integrated terminal), the
+# $RunOutputPath set by the first run sticks around and silently sends every
+# subsequent run's output into the original (now stale) folder. This helper
+# detects that case and regenerates the path.
+#
+# Logic:
+#   - If $Global:GovernanceOrchestratorActive is $true, the orchestrator is
+#     in charge — trust the inherited path unconditionally so all child
+#     scripts share the same run dir.
+#   - Otherwise (standalone), parse the inherited path's timestamp. If it
+#     parses and is younger than $StaleHours, reuse it (allows quick reruns
+#     after a failure). If older or unparseable, create a fresh run dir and
+#     emit a warning so the caller knows what happened.
+function Resolve-RunOutputPath {
+    param(
+        [Parameter(Mandatory)] [string]$OutputPathRoot,
+        [string]$ExistingPath = $null,
+        [int]$StaleHours      = 1
+    )
+
+    $orchestratorRun = Get-Variable -Name GovernanceOrchestratorActive -Scope Global -ErrorAction SilentlyContinue
+    $reused          = $false
+
+    if (-not [string]::IsNullOrWhiteSpace($ExistingPath)) {
+        if ($orchestratorRun -and $orchestratorRun.Value -eq $true) {
+            $reused = $true
+        } else {
+            try {
+                $dirName     = Split-Path $ExistingPath -Leaf
+                $existingDate = [datetime]::ParseExact($dirName, 'yyyy-MM-dd_HHmmss', [System.Globalization.CultureInfo]::InvariantCulture)
+                $ageHours    = ((Get-Date) - $existingDate).TotalHours
+                if ($ageHours -lt $StaleHours) {
+                    $reused = $true
+                } else {
+                    Write-Warning ("Inherited RunOutputPath '{0}' is {1:N1}h old; creating fresh run dir for this standalone run." -f $ExistingPath, $ageHours)
+                }
+            }
+            catch {
+                Write-Warning "Inherited RunOutputPath '$ExistingPath' could not be parsed as a run timestamp; creating fresh run dir."
+            }
+        }
+    }
+
+    if ($reused) {
+        $suffix = ConvertTo-RunFileSuffix -DirectoryName (Split-Path $ExistingPath -Leaf)
+        if ([string]::IsNullOrEmpty($suffix)) { $suffix = Get-RunFileSuffix }
+        return [PSCustomObject]@{
+            RunOutputPath = $ExistingPath
+            RunFileSuffix = $suffix
+            Reused        = $true
+        }
+    }
+
+    $now     = Get-Date
+    $newPath = Join-Path $OutputPathRoot $now.ToString('yyyy-MM-dd_HHmmss')
+    if (-not (Test-Path $newPath)) {
+        New-Item -ItemType Directory -Path $newPath -Force | Out-Null
+    }
+
+    return [PSCustomObject]@{
+        RunOutputPath = $newPath
+        RunFileSuffix = Get-RunFileSuffix -RunDate $now
+        Reused        = $false
     }
 }
 
@@ -136,5 +217,9 @@ function Assert-GovernanceConfig {
 
     if ($null -eq $IncludeManagerLookup -or $IncludeManagerLookup -isnot [bool]) {
         throw "IncludeManagerLookup must be `$true or `$false (currently: $IncludeManagerLookup)."
+    }
+
+    if ($null -eq $IncludeSignInActivity -or $IncludeSignInActivity -isnot [bool]) {
+        throw "IncludeSignInActivity must be `$true or `$false (currently: $IncludeSignInActivity)."
     }
 }
