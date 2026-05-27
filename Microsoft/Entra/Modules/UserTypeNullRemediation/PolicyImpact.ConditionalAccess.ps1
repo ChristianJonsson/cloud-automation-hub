@@ -10,7 +10,7 @@ function Get-GuestOrExternalTypeString {
     }
 
     $value = Get-ObjectValue -InputObject $GuestOrExternalObj -PropertyName 'GuestOrExternalUserTypes'
-    return if ($null -ne $value) { "$value" } else { '' }
+    if ($null -ne $value) { return "$value" } else { return '' }
 }
 
 function Test-UserMatchesGuestOrExternalTypes {
@@ -155,9 +155,14 @@ function Invoke-ConditionalAccessUserImpact {
         }
     }
 
+    # MatchCount drives RiskLevel/blocking flags, so exclude policies that cannot
+    # enforce (state = 'disabled'). Disabled policies are still retained in
+    # MatchDetails for transparency, but must not inflate the risk signal.
     return [pscustomobject]@{
         Matches = $caMatches
-        MatchCount = @($matchDetails | Where-Object { $_.ImpactDirection -ne 'NoMaterialChange' }).Count
+        MatchCount = @($matchDetails | Where-Object {
+            $_.ImpactDirection -ne 'NoMaterialChange' -and "$($_.PolicyState)".ToLowerInvariant() -ne 'disabled'
+        }).Count
         MatchDetails = $matchDetails
     }
 }

@@ -8,7 +8,7 @@
 
 . "$PSScriptRoot\00_Config.ps1"
 
-$outputFile = "${OutputPath}EntraConnect_Config.txt"
+$outputFile = Join-Path $OutputPath 'EntraConnect_Config.txt'
 $separator  = "`n" + ("=" * 60) + "`n"
 
 $output = @()

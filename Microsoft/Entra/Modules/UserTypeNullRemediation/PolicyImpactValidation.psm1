@@ -404,6 +404,18 @@ function Get-UserPolicyImpact {
     if ($roleData.EligibleCount -gt 0) { $blockingFlags += 'PIMEligibleRole' }
     if ($entitlementData.AssignmentCount -gt 0) { $blockingFlags += 'EntitlementAssignment' }
 
+    # When a risk-bearing area's probe failed, its counts are zero — so the risk
+    # level above is derived from incomplete data and may understate the true
+    # impact. Surface that explicitly rather than silently reporting low/no risk:
+    # flag it, and promote a 'None' verdict to 'Unknown' so it cannot be mistaken
+    # for a clean result.
+    $riskBearingAreas = @('ConditionalAccess', 'DirectoryRoleAssignments', 'EntitlementManagement', 'GroupAndAppAssignments', 'DynamicGroups')
+    $failedRiskAreas = @($coverageFailures | Where-Object { $riskBearingAreas -contains $_.Key })
+    if ($failedRiskAreas.Count -gt 0) {
+        $blockingFlags += 'CoverageIncomplete'
+        if ($riskLevel -eq 'None') { $riskLevel = 'Unknown' }
+    }
+
     $coverageFailureAreas = @($coverageFailures | ForEach-Object { $_.Key } | Sort-Object -Unique)
     $coverageFailureText = if ($coverageFailureAreas.Count -gt 0) { $coverageFailureAreas -join ',' } else { 'None' }
 

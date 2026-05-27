@@ -676,7 +676,12 @@ foreach ($candidate in $updateCandidates) {
     }
 
     try {
-        Update-MgUser -UserId $user.Id -UserType $candidate.ProposedUserType -ErrorAction Stop
+        # Wrap the write in the same retry/token-refresh helper the read path uses,
+        # so a transient 429/503 or a token expiring mid-run is retried rather than
+        # failing the individual user.
+        Invoke-GraphOperationWithRetry -OperationName "Update-MgUser UserType ($($user.Id))" -Operation {
+            Update-MgUser -UserId $user.Id -UserType $candidate.ProposedUserType -ErrorAction Stop
+        } | Out-Null
         Write-Log -Message "Updated $($user.UserPrincipalName) (UserId: $($user.Id)) to UserType='$($candidate.ProposedUserType)' successfully." -NoConsole
         $successfulUpdates += [pscustomobject]@{
             User = $user

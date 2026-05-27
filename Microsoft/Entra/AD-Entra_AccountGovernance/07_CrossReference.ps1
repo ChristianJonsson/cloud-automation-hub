@@ -45,13 +45,16 @@ $requiredInputFiles = @(
     @{ Path = Join-Path $RunOutputPath $prevSyncedUsersFile; Label = 'Entra previously synced' }
 )
 
-# Require at least one forest AD file
+# Require at least one forest AD file.
+# Forest names are sanitised the same way 06_ExportADUsers builds the file name,
+# so a forest name with filesystem-illegal characters still resolves here.
 $forestAdFiles = @($Forests | ForEach-Object {
-    Join-Path $RunOutputPath "AD_AllUsers_${_}_$RunFileSuffix.ndjson"
+    $safeForestName = ConvertTo-SafeFileNameToken -Token $_
+    Join-Path $RunOutputPath "AD_AllUsers_${safeForestName}_$RunFileSuffix.ndjson"
 } | Where-Object { Test-Path $_ })
 
 if ($forestAdFiles.Count -eq 0) {
-    $expectedFiles = $Forests | ForEach-Object { "AD_AllUsers_${_}_$RunFileSuffix.ndjson" }
+    $expectedFiles = $Forests | ForEach-Object { "AD_AllUsers_$(ConvertTo-SafeFileNameToken -Token $_)_$RunFileSuffix.ndjson" }
     throw "No AD user export files found in '$RunOutputPath'. Expected: $($expectedFiles -join ', '). Run script 06 first."
 }
 
@@ -83,9 +86,13 @@ foreach ($forestFile in $forestAdFiles) {
 }
 Write-Log "  Total AD users loaded: $($adUsers.Count)"
 
-# Build lookup of ImmutableIds present in Entra
+# Build lookup of ImmutableIds present in Entra.
+# Include BOTH the actively-synced and previously-synced buckets: a previously-
+# synced (now soft-matched / disabled) Entra object still carries the AD
+# ImmutableId, so omitting it would report its AD counterpart as a false-positive
+# "AD-only" account.
 $entraImmutableIds = @{}
-$entraSynced | ForEach-Object {
+@($entraSynced) + @($prevSynced) | ForEach-Object {
     if ($_.OnPremisesImmutableId) {
         $entraImmutableIds[$_.OnPremisesImmutableId] = $true
     }
