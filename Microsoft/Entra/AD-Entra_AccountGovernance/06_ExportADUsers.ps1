@@ -62,6 +62,8 @@ $adProperties = @(
     "Description",
     "DistinguishedName",    # ObjectGUID is a default property — do not list explicitly or some AD module
                             # versions return it as ADPropertyValueCollection instead of System.Guid
+                            # SID is also default — included in record output but not listed here
+    "SIDHistory",           # Carries old SID after domain migration / merger
 
     # Account state
     "Enabled",
@@ -86,12 +88,18 @@ $adProperties = @(
     "DoesNotRequirePreAuth",
     "TrustedForDelegation",
     "TrustedToAuthForDelegation",
+    "MemberOf",             # Group memberships — needed for admin-group detection (tab 18)
+                            # and Group & Access Overview (tab 07)
 
     # Organisation
     "Department",
     "Title",
     "Company",
     "Manager",
+    "Office",               # physicalDeliveryOfficeName — used in tab 15 for student↔guardian linking
+    "EmployeeID",
+    "EmployeeNumber",
+    "EmployeeType",
 
     # Contact
     "Mail",
@@ -215,6 +223,10 @@ $adUsers | ForEach-Object {
         ImmutableId                     = $immutableId   # Matches Entra OnPremisesImmutableId
         DistinguishedName               = $_.DistinguishedName
 
+        # Security identifiers (correlates with Entra OnPremisesSecurityIdentifier)
+        SID                             = if ($_.SID) { $_.SID.Value } else { $null }
+        SIDHistory                      = @($_.SIDHistory | ForEach-Object { $_.Value })
+
         # Account state
         Enabled                         = $_.Enabled
         AccountExpirationDate           = $_.AccountExpirationDate
@@ -238,12 +250,17 @@ $adUsers | ForEach-Object {
         DoesNotRequirePreAuth           = $_.DoesNotRequirePreAuth
         TrustedForDelegation            = $_.TrustedForDelegation
         TrustedToAuthForDelegation      = $_.TrustedToAuthForDelegation
+        MemberOf                        = @($_.MemberOf)
 
         # Organisation
         Department                      = $_.Department
         Title                           = $_.Title
         Company                         = $_.Company
         Manager                         = $_.Manager
+        Office                          = $_.Office
+        EmployeeID                      = $_.EmployeeID
+        EmployeeNumber                  = $_.EmployeeNumber
+        EmployeeType                    = $_.EmployeeType
 
         # Contact
         Mail                            = $_.Mail
