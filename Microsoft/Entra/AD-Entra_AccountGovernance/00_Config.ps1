@@ -115,6 +115,17 @@ function ConvertTo-RunFileSuffix {
     }
 }
 
+# Sanitises a token (e.g. a forest name) for safe use inside a file name by
+# replacing any character that is illegal on the filesystem with '_'. Must be
+# applied consistently anywhere a forest name is turned into a file name so that
+# the writer (06) and the reader (07) agree on the resulting path.
+function ConvertTo-SafeFileNameToken {
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string]$Token)
+    $invalid = [System.IO.Path]::GetInvalidFileNameChars()
+    $pattern = '[{0}]' -f [regex]::Escape(-join $invalid)
+    return ([regex]::Replace($Token, $pattern, '_'))
+}
+
 # Decides whether to reuse an inherited $RunOutputPath or create a fresh one.
 #
 # Bug guarded against: when an export script is dot-sourced repeatedly in a

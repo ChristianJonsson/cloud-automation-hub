@@ -229,8 +229,10 @@ Write-Log "  Written -> $syncedFile"
 
 # --- Bucket 2: Previously synced ----------------------------------------------
 Write-Log "Processing Bucket 2 - Previously synced..."
+# Use truthiness (not -ne $null) so a blank/empty ImmutableId falls through to
+# Bucket 3 (cloud-only), matching how 07_CrossReference treats it.
 $prevSynced = $allUsers | Where-Object {
-    $_.OnPremisesSyncEnabled -ne $true -and $_.OnPremisesImmutableId -ne $null
+    $_.OnPremisesSyncEnabled -ne $true -and -not [string]::IsNullOrEmpty($_.OnPremisesImmutableId)
 }
 Write-Log "  Count: $($prevSynced.Count)"
 $prevSyncedFile = "Entra_PreviouslySynced_$RunFileSuffix.ndjson"
@@ -241,7 +243,7 @@ Write-Log "  Written -> $prevSyncedFile"
 # --- Bucket 3: Cloud only -----------------------------------------------------
 Write-Log "Processing Bucket 3 - Cloud only..."
 $cloudOnly = $allUsers | Where-Object {
-    $_.OnPremisesSyncEnabled -ne $true -and $_.OnPremisesImmutableId -eq $null
+    $_.OnPremisesSyncEnabled -ne $true -and [string]::IsNullOrEmpty($_.OnPremisesImmutableId)
 }
 Write-Log "  Count: $($cloudOnly.Count)"
 $cloudOnlyFile = "Entra_CloudOnly_$RunFileSuffix.ndjson"

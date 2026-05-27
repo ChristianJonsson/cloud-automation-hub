@@ -178,7 +178,8 @@ try {
 
 Write-Log "Fetched $($adUsers.Count) AD users. Processing..."
 
-$adOutputFileName = "AD_AllUsers_${ForestName}_${RunFileSuffix}.ndjson"
+$safeForestName = ConvertTo-SafeFileNameToken -Token $ForestName
+$adOutputFileName = "AD_AllUsers_${safeForestName}_${RunFileSuffix}.ndjson"
 $outputFile = Join-Path $RunOutputPath $adOutputFileName
 
 $adUsers | ForEach-Object {
@@ -197,8 +198,13 @@ $adUsers | ForEach-Object {
             } else { $null }
         }
         "mS-DS-ConsistencyGuid" {
+            # Depending on AD module version this comes back either as byte[]
+            # directly or wrapped in an ADPropertyValueCollection. Unwrap to the
+            # underlying byte[] before base64-encoding (mirrors the ObjectGUID
+            # handling above), otherwise ToBase64String throws on the wrapper.
             $cg = $_."mS-DS-ConsistencyGuid"
-            if ($cg) { [System.Convert]::ToBase64String($cg) } else { $null }
+            $cgBytes = if ($cg -is [byte[]]) { $cg } elseif ($cg) { @($cg)[0] } else { $null }
+            if ($cgBytes -is [byte[]]) { [System.Convert]::ToBase64String($cgBytes) } else { $null }
         }
         "Custom" {
             if ($CustomImmutableIdAttribute) { $_.$CustomImmutableIdAttribute } else { $null }

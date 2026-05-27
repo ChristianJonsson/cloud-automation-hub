@@ -8,14 +8,21 @@
 
 . "$PSScriptRoot\00_Config.ps1"
 
+# --- Output file paths --------------------------------------------------------
+$inboundFile          = Join-Path $OutputPath 'SyncRules_Inbound.txt'
+$detailFile           = Join-Path $OutputPath 'SyncRules_Detail.txt'
+$disconnectorFlowFile = Join-Path $OutputPath 'SyncRules_DisconnectorFlow.txt'
+$disconnectorScopeFile = Join-Path $OutputPath 'SyncRules_DisconnectorScope.txt'
+$connectorPartitionsFile = Join-Path $OutputPath 'SyncRules_ConnectorPartitions.txt'
+
 # --- All inbound rules --------------------------------------------------------
 Write-Host "Exporting inbound sync rules..." -ForegroundColor Cyan
 
 Get-ADSyncRule | Where-Object {$_.Direction -eq "Inbound"} |
     Select-Object Name, ConnectorName, ScopeFilterGroups |
-    Format-List | Out-File "${OutputPath}SyncRules_Inbound.txt" -Encoding UTF8
+    Format-List | Out-File $inboundFile -Encoding UTF8
 
-Write-Host "  Written -> ${OutputPath}SyncRules_Inbound.txt" -ForegroundColor Green
+Write-Host "  Written -> $inboundFile" -ForegroundColor Green
 
 # --- Detail on key rules ------------------------------------------------------
 # Rule names are configured in $KeySyncRuleNames (00_Config.ps1)
@@ -23,9 +30,9 @@ Write-Host "Exporting detail on key rules..." -ForegroundColor Cyan
 
 Get-ADSyncRule | Where-Object {
     $_.Name -in $KeySyncRuleNames
-} | Format-List * | Out-File "${OutputPath}SyncRules_Detail.txt" -Encoding UTF8
+} | Format-List * | Out-File $detailFile -Encoding UTF8
 
-Write-Host "  Written -> ${OutputPath}SyncRules_Detail.txt" -ForegroundColor Green
+Write-Host "  Written -> $detailFile" -ForegroundColor Green
 
 # --- Disconnector rule attribute flow -----------------------------------------
 Write-Host "Exporting Disconnector attribute flow..." -ForegroundColor Cyan
@@ -39,9 +46,9 @@ $rule.AttributeFlowMappings | ForEach-Object {
         Expression   = $_.Expression
         ValueMerge   = $_.ValueMergeType
     }
-} | Format-List * | Out-String | Out-File "${OutputPath}SyncRules_DisconnectorFlow.txt" -Encoding UTF8
+} | Format-List * | Out-String | Out-File $disconnectorFlowFile -Encoding UTF8
 
-Write-Host "  Written -> ${OutputPath}SyncRules_DisconnectorFlow.txt" -ForegroundColor Green
+Write-Host "  Written -> $disconnectorFlowFile" -ForegroundColor Green
 
 # --- Disconnector scope condition (nested object) -----------------------------
 # Note: In some environments this rule has an empty ScopeFilter and fires on
@@ -55,15 +62,15 @@ $scopeOutput = $rule.ScopeFilter | ForEach-Object {
     }
 } | Out-String
 
-$scopeOutput | Out-File "${OutputPath}SyncRules_DisconnectorScope.txt" -Encoding UTF8
-Write-Host "  Written -> ${OutputPath}SyncRules_DisconnectorScope.txt" -ForegroundColor Green
+$scopeOutput | Out-File $disconnectorScopeFile -Encoding UTF8
+Write-Host "  Written -> $disconnectorScopeFile" -ForegroundColor Green
 
 # --- OU / connector scope -----------------------------------------------------
 Write-Host "Exporting connector partition info..." -ForegroundColor Cyan
 
 $connector = Get-ADSyncConnector | Where-Object {$_.ConnectorTypeName -eq $ADConnectorTypeName}
 $connector.Partitions | Out-String |
-    Out-File "${OutputPath}SyncRules_ConnectorPartitions.txt" -Encoding UTF8
+    Out-File $connectorPartitionsFile -Encoding UTF8
 
-Write-Host "  Written -> ${OutputPath}SyncRules_ConnectorPartitions.txt" -ForegroundColor Green
+Write-Host "  Written -> $connectorPartitionsFile" -ForegroundColor Green
 Write-Host "`nAll sync rule exports complete." -ForegroundColor Green

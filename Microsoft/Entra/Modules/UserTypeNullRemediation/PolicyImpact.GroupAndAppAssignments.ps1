@@ -16,9 +16,15 @@ function Invoke-GroupAndAppAssignmentsUserImpact {
 
     if ($UserAreaStatus['GroupAndAppAssignments'] -eq 'Available') {
         try {
+            # Get-MgUserMemberOf returns every directory object the user belongs to
+            # (groups, directory roles, administrative units). Keep only groups so
+            # the count and the IDs handed to ConditionalAccess/DynamicGroups are
+            # not polluted by roles/AUs.
             $groupMemberships = @(
                 Invoke-PolicyAreaGraphWithRetry -OperationName "Get-MgUserMemberOf ($($User.Id))" -Operation {
                     Get-MgUserMemberOf -UserId $User.Id -All -ErrorAction Stop
+                } | Where-Object {
+                    "$(Get-ObjectValue -InputObject $_ -PropertyName '@odata.type')" -eq '#microsoft.graph.group'
                 }
             )
             $appRoleAssignments = @(

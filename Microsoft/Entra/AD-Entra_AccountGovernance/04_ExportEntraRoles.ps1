@@ -165,7 +165,13 @@ if (-not $IncludePimEligibilities) {
     }
     catch {
         $msg = $_.Exception.Message
-        $isLicenseOrAuth = $msg -match 'license|authorization_requestdenied|forbidden|tenant does not have'
+        # Prefer the HTTP status code (locale-independent) and fall back to message
+        # matching. PIM eligibility is unavailable without Entra ID P2 (or with
+        # insufficient consent), which surfaces as 401/402/403 or a licensing message.
+        $statusCode = $null
+        try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { }
+        $isLicenseOrAuth = ($statusCode -in 401, 402, 403) -or
+            ($msg -match 'licen[sc]|premium|\bP2\b|subscription|authorization_requestdenied|forbidden|unauthorized|tenant does not have|not licensed')
         if ($isLicenseOrAuth) {
             Write-Log "  WARNING: PIM eligibility query failed (likely no Entra ID P2 license or insufficient permissions): $msg"
             Write-Log "  Writing empty $roleEligibilitiesFile and continuing."
