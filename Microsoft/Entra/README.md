@@ -41,11 +41,11 @@ The script evaluates these policy-impact areas when building preflight and per-u
 
 Critical areas (write mode can block when unavailable, depending on `-StrictnessMode`)
 
-- **ConditionalAccess** — fetches all CA policies via `Get-MgIdentityConditionalAccessPolicy -All` (requires `Policy.Read.All`). For each user, evaluates `Conditions.Users`: included when `IncludeUsers` contains `All` or the user's ID, when any `IncludeGroups` entry matches a group the user belongs to, or when `IncludeGuestsOrExternalUsers` applies to the current/proposed user type. Exclusion uses `ExcludeUsers`, `ExcludeGroups`, and `ExcludeGuestsOrExternalUsers` similarly. Per-policy output includes directional impact and state transitions (`CurrentState`, `PostChangeState`, `ImpactDirection`), with report labels such as `StartsApplying`, `StopsApplying`, and `NoMaterialChange`. Matching policy count is recorded as `ConditionalAccessCount` and elevates `PolicyRiskLevel` to `High`. **Not evaluated:** whether the policy is enabled or disabled (disabled policies still count as matches), named locations, device compliance, sign-in risk, and application-scoped conditions.
+- **ConditionalAccess** — fetches all CA policies via `Get-MgIdentityConditionalAccessPolicy -All` (requires `Policy.Read.All`). For each user, evaluates `Conditions.Users`: included when `IncludeUsers` contains `All` or the user's ID, when any `IncludeGroups` entry matches a group the user belongs to, or when `IncludeGuestsOrExternalUsers` applies to the current/proposed user type. Exclusion uses `ExcludeUsers`, `ExcludeGroups`, and `ExcludeGuestsOrExternalUsers` similarly. Per-policy output includes directional impact and state transitions (`CurrentState`, `PostChangeState`, `ImpactDirection`), with report labels such as `StartsApplying`, `StopsApplying`, and `NoMaterialChange`. Matching policy count is recorded as `ConditionalAccessCount` and elevates `PolicyRiskLevel` to `High`. Disabled policies (`state = disabled`) are excluded from this count so they do not inflate the risk signal, but they are still retained in `ConditionalAccessPolicyDetailsJson` (with their `PolicyState`) for transparency. **Not evaluated:** named locations, device compliance, sign-in risk, and application-scoped conditions.
 
 - **DynamicGroups** — fetches all dynamic-membership groups via `Get-MgGroup -Filter "groupTypes/any(c:c eq 'DynamicMembership')"` (requires `Directory.Read.All`), retrieving `Id`, `DisplayName`, and `MembershipRule`. For each user, filters groups whose `MembershipRule` references `user.userType` or `userType` (case-insensitive), or contains the proposed UserType value as a literal string. For each matched group, calls `POST /groups/{id}/evaluateDynamicMembership` with the user's ID to determine current membership status, then applies simple pattern extraction (`-eq`/`-ne` comparisons on `user.userType`) to estimate post-change membership. If the evaluate API call fails, current membership is derived from the user's group membership list (`Get-MgUserMemberOf` results) and evaluation continues. Reports `ImpactDirection` per group using report terms: `GainsAccess`, `LosesAccess`, `ManualReview`, or `NoMaterialChange` (not counted). Count of impacted groups is recorded as `DynamicGroupRuleCount` and contributes to `PolicyRiskLevel` `Low`. Evaluation failures are logged as `WARNING`; `405 MethodNotAllowed` responses (a permanent API limitation for certain group types) are logged at `INFO` instead and fall back to the group membership list for current membership. **Not evaluated:** complex rule expressions beyond simple `-eq`/`-ne` comparisons on `user.userType`.
 
-- **GroupAndAppAssignments** — per-user: calls `Get-MgUserMemberOf -All` to retrieve all group memberships, and `Get-MgUserAppRoleAssignment -All` to retrieve app role assignments (both require `Directory.Read.All`). Counts are recorded as `GroupMembershipCount` and `AppRoleAssignmentCount`. App role assignments elevate `PolicyRiskLevel` to `Medium`; group memberships elevate to `Low`. Group memberships are also used as input for the ConditionalAccess and DynamicGroups per-user checks. **Not evaluated:** transitive group-of-group nesting beyond what `Get-MgUserMemberOf` returns directly.
+- **GroupAndAppAssignments** — per-user: calls `Get-MgUserMemberOf -All` and keeps only entries whose `@odata.type` is `#microsoft.graph.group` (directory roles and administrative units returned by the same call are filtered out so they do not inflate the count or pollute the downstream group IDs), and `Get-MgUserAppRoleAssignment -All` to retrieve app role assignments (both require `Directory.Read.All`). Counts are recorded as `GroupMembershipCount` and `AppRoleAssignmentCount`. App role assignments elevate `PolicyRiskLevel` to `Medium`; group memberships elevate to `Low`. Group memberships are also used as input for the ConditionalAccess and DynamicGroups per-user checks. **Not evaluated:** transitive group-of-group nesting beyond what `Get-MgUserMemberOf` returns directly.
 
 - **EntitlementManagement** — per-user: calls `Get-MgEntitlementManagementAssignment -Filter "target/objectid eq '<userId>'" -ExpandProperty target,accessPackage -All` (requires `EntitlementManagement.Read.All`). Expired assignments are excluded after retrieval. Count is recorded as `EntitlementAssignmentCount`, elevates `PolicyRiskLevel` to `Medium`, and adds `EntitlementAssignment` to `BlockingFlags`. In `Permissive` mode, an unavailable entitlement scope does not block writes but is recorded as partial coverage. **Not evaluated:** individual access package policies and their userType eligibility rules.
 
@@ -62,6 +62,11 @@ Scope behavior notes:
 - Preview mode can continue with partial policy coverage when some policy scopes are unavailable.
 - Write mode enforcement depends on `-StrictnessMode`.
 - `Permissive` allows write mode when only entitlement preflight visibility is unavailable; coverage is marked as partial in outputs.
+
+Risk level and incomplete coverage:
+
+- `PolicyRiskLevel` is one of `High`, `Medium`, `Low`, `None`, or `Unknown`. `Unknown` is emitted when a risk-bearing area's per-user probe failed (so its counts are zero and the computed risk would otherwise read `None` from incomplete data) — it must not be read as a clean result.
+- When any risk-bearing area (`ConditionalAccess`, `DirectoryRoleAssignments`, `EntitlementManagement`, `GroupAndAppAssignments`, `DynamicGroups`) has incomplete coverage for a user, `CoverageIncomplete` is added to that user's `BlockingFlags`, and the affected areas are listed in `CoverageFailureAreas`. This surfaces under-reported risk rather than letting a failed probe silently lower the verdict.
 
 The script ensures Graph prerequisites using module logic in:
 
@@ -276,6 +281,27 @@ Export file format is controlled by `-ExportFormat` (default: `NDJSON`). The fil
 4. In non-preview mode, write behavior is controlled by `-StrictnessMode` and preflight outcomes.
 5. Report/export/preflight paths are validated early; invalid path values fail fast before Graph processing.
 6. If entitlement preflight checks are unavailable due to missing authorization, preview still works, but write behavior depends on strictness and criticality.
+
+## Testing
+
+Pure logic in the policy-impact evaluators is covered by Pester 5 tests under `Modules/UserTypeNullRemediation/Tests/`:
+
+```text
+Modules/UserTypeNullRemediation/Tests/
+    PolicyImpact.ConditionalAccess.Tests.ps1
+```
+
+`PolicyImpact.ConditionalAccess.Tests.ps1` dot-sources `PolicyImpactHelpers.ps1` and `PolicyImpact.ConditionalAccess.ps1` (no Graph connection required) and covers:
+
+- `Get-GuestOrExternalTypeString` returning the `GuestOrExternalUserTypes` string (regression guard for a bug that previously made it always return empty, silently disabling all guest-scoped Conditional Access analysis).
+- `Test-UserMatchesGuestOrExternalTypes` mapping of `Guest`/`Member` to the `b2bCollaboration*`/`internalGuest` enum values.
+- `Invoke-ConditionalAccessUserImpact` detecting guest-scoped policy transitions, and excluding disabled policies from `MatchCount` while retaining them in `MatchDetails`.
+
+**Running the tests** (Pester 5+ required):
+
+```powershell
+Invoke-Pester .\Microsoft\Entra\Modules\UserTypeNullRemediation\Tests\
+```
 
 ## Related Layout Documentation
 

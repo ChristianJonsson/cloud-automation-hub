@@ -283,8 +283,10 @@ User properties can contain newline characters and special characters that corru
 | Bucket | Filter |
 |--------|--------|
 | Actively synced | `OnPremisesSyncEnabled -eq $true` |
-| Previously synced | `OnPremisesSyncEnabled -ne $true` AND `OnPremisesImmutableId -ne $null` |
-| Cloud-only | `OnPremisesSyncEnabled -ne $true` AND `OnPremisesImmutableId -eq $null` |
+| Previously synced | `OnPremisesSyncEnabled -ne $true` AND `OnPremisesImmutableId` is non-empty |
+| Cloud-only | `OnPremisesSyncEnabled -ne $true` AND `OnPremisesImmutableId` is null or empty |
+
+> The ImmutableId test uses truthiness (`[string]::IsNullOrEmpty`), not a bare `-ne $null` — a blank ImmutableId falls through to **Cloud-only**, matching how `07_CrossReference.ps1` treats it.
 
 ### Manager lookup
 
@@ -299,6 +301,8 @@ Run **`06_ExportADUsers.ps1`** on a domain-joined machine with the RSAT AD modul
 This script exports all AD user accounts and calculates each user's ImmutableId using the method configured in `$ImmutableIdMethod` (`00_Config.ps1`). The ImmutableId is used in Step 5 to match AD users against their Entra counterparts.
 
 Output: `AD_AllUsers_<ForestName>.ndjson` (default: `AD_AllUsers_default.ndjson`)
+
+Any filesystem-illegal characters in `-ForestName` are replaced with `_` for the file name (via the shared `ConvertTo-SafeFileNameToken` helper in `00_Config.ps1`); `07_CrossReference.ps1` applies the same sanitisation when locating the file, so writer and reader always agree.
 
 For **multi-forest environments** (Setup 3): use the orchestrator or run manually with `-ForestName` per forest.
 
@@ -373,11 +377,12 @@ Joins users × roles × group memberships into the file top management actually 
 
 ## Testing
 
-The join logic in `08_BuildAdminSummary.ps1` is covered by Pester 5 tests under `Tests\`:
+Pure logic is covered by Pester 5 tests under `Tests\`:
 
 ```text
 Tests\
     08_BuildAdminSummary.Tests.ps1
+    00_Config.Tests.ps1
     Fixtures\
         Users.ndjson          (5 users: synced/cloud-only/guest mix)
         Roles.ndjson          (Global Admin, User Admin, custom role)
@@ -387,7 +392,9 @@ Tests\
         GroupMembers.ndjson   (nested membership chain)
 ```
 
-The tests cover Direct vs ViaGroup vs nested-group vs ServicePrincipal, dedup-but-keep-both for users with both paths, PIM eligibility, stale-admin threshold, and empty-input safety.
+`08_BuildAdminSummary.Tests.ps1` covers the join logic in `08_BuildAdminSummary.ps1`: Direct vs ViaGroup vs nested-group vs ServicePrincipal, dedup-but-keep-both for users with both paths, PIM eligibility, stale-admin threshold, and empty-input safety.
+
+`00_Config.Tests.ps1` covers the pure helpers in `00_Config.ps1`: `ConvertTo-SafeFileNameToken` (forest-name sanitisation for file names), `Get-RunFileSuffix`, and `ConvertTo-RunFileSuffix` (run-directory timestamp parsing/round-trip).
 
 The script exposes `Build-AdminSummary` as a function and gates its main I/O block behind a global sentinel (`$BuildAdminSummary_TestMode`), so tests dot-source the script without triggering file I/O and call the function directly with fixture arrays.
 
@@ -426,7 +433,12 @@ $user = Get-ADUser -Identity <samaccountname> -Properties ObjectGUID
 For **mS-DS-ConsistencyGuid** environments (Setup 2):
 ```powershell
 $user = Get-ADUser -Identity <samaccountname> -Properties mS-DS-ConsistencyGuid
-[System.Convert]::ToBase64String($user."mS-DS-ConsistencyGuid")
+$cg = $user."mS-DS-ConsistencyGuid"
+# Unwrap to byte[] first — depending on the AD module version this comes back
+# either as byte[] directly or wrapped in an ADPropertyValueCollection.
+# 06_ExportADUsers.ps1 performs the same unwrap.
+$cgBytes = if ($cg -is [byte[]]) { $cg } elseif ($cg) { @($cg)[0] } else { $null }
+[System.Convert]::ToBase64String($cgBytes)
 ```
 
 ### ScopeFilter on Disconnector rule returns empty
