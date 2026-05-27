@@ -1,8 +1,8 @@
 # ==============================================================================
-# 04_ExportADUsers.ps1
+# 06_ExportADUsers.ps1
 # Purpose : Export all AD user accounts for cross-reference against Entra buckets
 # Run on  : Domain-joined machine with RSAT AD module
-# Output  : <RunOutputPath>\AD_AllUsers_<ForestName>.ndjson
+# Output  : <RunOutputPath>\AD_AllUsers_<ForestName>_<RunFileSuffix>.ndjson
 # Requires: 00_Config.ps1 (shared configuration)
 #
 # Approach:
@@ -11,7 +11,7 @@
 #        ObjectGUID            - Base64-encodes the AD ObjectGUID (default)
 #        mS-DS-ConsistencyGuid - Base64-encodes the mS-DS-ConsistencyGuid attribute
 #        Custom                - Reads the attribute named in $CustomImmutableIdAttribute
-#   3. ImmutableId is used in 05_CrossReference.ps1 to match against Entra's
+#   3. ImmutableId is used in 07_CrossReference.ps1 to match against Entra's
 #      OnPremisesImmutableId
 # ==============================================================================
 
@@ -27,12 +27,12 @@ $loggingModulePath = Join-Path $PSScriptRoot '..\..\Common\Modules\Shared\Loggin
 Import-Module $loggingModulePath -Force -ErrorAction Stop
 
 # --- Run output directory -----------------------------------------------------
-if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
-    $RunOutputPath = Join-Path $OutputPath (Get-Date -Format 'yyyy-MM-dd_HHmmss')
-    New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
-}
+$resolvedRun  = Resolve-RunOutputPath -OutputPathRoot $OutputPath `
+                                      -ExistingPath (Get-Variable -Name RunOutputPath -ValueOnly -ErrorAction SilentlyContinue)
+$RunOutputPath = $resolvedRun.RunOutputPath
+$RunFileSuffix = $resolvedRun.RunFileSuffix
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
-Write-Log "=== 04_ExportADUsers started (ForestName: $ForestName, ImmutableIdMethod: $ImmutableIdMethod) ==="
+Write-Log "=== 06_ExportADUsers started (ForestName: $ForestName, ImmutableIdMethod: $ImmutableIdMethod) ==="
 
 # --- Module check -------------------------------------------------------------
 if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
@@ -62,6 +62,8 @@ $adProperties = @(
     "Description",
     "DistinguishedName",    # ObjectGUID is a default property — do not list explicitly or some AD module
                             # versions return it as ADPropertyValueCollection instead of System.Guid
+                            # SID is also default — included in record output but not listed here
+    "SIDHistory",           # Carries old SID after domain migration / merger
 
     # Account state
     "Enabled",
@@ -86,12 +88,18 @@ $adProperties = @(
     "DoesNotRequirePreAuth",
     "TrustedForDelegation",
     "TrustedToAuthForDelegation",
+    "MemberOf",             # Group memberships — needed for admin-group detection (tab 18)
+                            # and Group & Access Overview (tab 07)
 
     # Organisation
     "Department",
     "Title",
     "Company",
     "Manager",
+    "Office",               # physicalDeliveryOfficeName — used in tab 15 for student↔guardian linking
+    "EmployeeID",
+    "EmployeeNumber",
+    "EmployeeType",
 
     # Contact
     "Mail",
@@ -170,7 +178,8 @@ try {
 
 Write-Log "Fetched $($adUsers.Count) AD users. Processing..."
 
-$outputFile = Join-Path $RunOutputPath "AD_AllUsers_${ForestName}.ndjson"
+$adOutputFileName = "AD_AllUsers_${ForestName}_${RunFileSuffix}.ndjson"
+$outputFile = Join-Path $RunOutputPath $adOutputFileName
 
 $adUsers | ForEach-Object {
     # Resolve ObjectGUID once — depending on AD module version, ObjectGUID is
@@ -214,6 +223,10 @@ $adUsers | ForEach-Object {
         ImmutableId                     = $immutableId   # Matches Entra OnPremisesImmutableId
         DistinguishedName               = $_.DistinguishedName
 
+        # Security identifiers (correlates with Entra OnPremisesSecurityIdentifier)
+        SID                             = if ($_.SID) { $_.SID.Value } else { $null }
+        SIDHistory                      = @($_.SIDHistory | ForEach-Object { $_.Value })
+
         # Account state
         Enabled                         = $_.Enabled
         AccountExpirationDate           = $_.AccountExpirationDate
@@ -237,12 +250,17 @@ $adUsers | ForEach-Object {
         DoesNotRequirePreAuth           = $_.DoesNotRequirePreAuth
         TrustedForDelegation            = $_.TrustedForDelegation
         TrustedToAuthForDelegation      = $_.TrustedToAuthForDelegation
+        MemberOf                        = @($_.MemberOf)
 
         # Organisation
         Department                      = $_.Department
         Title                           = $_.Title
         Company                         = $_.Company
         Manager                         = $_.Manager
+        Office                          = $_.Office
+        EmployeeID                      = $_.EmployeeID
+        EmployeeNumber                  = $_.EmployeeNumber
+        EmployeeType                    = $_.EmployeeType
 
         # Contact
         Mail                            = $_.Mail
@@ -299,5 +317,5 @@ $adUsers | ForEach-Object {
 } | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 } |
     Out-File $outputFile -Encoding UTF8
 
-Write-Log "=== 04_ExportADUsers complete ==="
-Write-Log "  Written -> AD_AllUsers_${ForestName}.ndjson ($($adUsers.Count) users)"
+Write-Log "=== 06_ExportADUsers complete ==="
+Write-Log "  Written -> $adOutputFileName ($($adUsers.Count) users)"

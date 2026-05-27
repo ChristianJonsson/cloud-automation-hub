@@ -3,7 +3,7 @@
 # Purpose : Fetch all Entra users once, split into three audit buckets,
 #           export as NDJSON (safe against newlines/special chars in values)
 # Run on  : Any machine with Microsoft.Graph PowerShell module
-# Output  : <RunOutputPath>\Entra_*.ndjson
+# Output  : <RunOutputPath>\Entra_*_<RunFileSuffix>.ndjson
 # Requires: 00_Config.ps1 (shared configuration)
 #
 # Why NDJSON: User properties can contain newline characters and other special
@@ -18,7 +18,7 @@
 . "$PSScriptRoot\00_Config.ps1"
 
 # --- Module imports -----------------------------------------------------------
-$loggingModulePath   = Join-Path $PSScriptRoot '..\..\Common\Modules\Shared\Logging.psm1'
+$loggingModulePath = Join-Path $PSScriptRoot '..\..\Common\Modules\Shared\Logging.psm1'
 $graphConnModulePath = Join-Path $PSScriptRoot '..\Modules\Shared\GraphConnection.psm1'
 $graphDataModulePath = Join-Path $PSScriptRoot '..\Modules\Shared\GraphData.psm1'
 
@@ -30,128 +30,174 @@ Import-Module $graphDataModulePath -Force -ErrorAction Stop
 # When called from Run-AccountGovernanceAudit.ps1, $RunOutputPath is already set
 # in the caller's scope and is reused here. For standalone runs a new timestamped
 # directory is created so each run's output is preserved independently.
-if (-not (Get-Variable -Name RunOutputPath -ErrorAction SilentlyContinue)) {
-    $RunOutputPath = Join-Path $OutputPath (Get-Date -Format 'yyyy-MM-dd_HHmmss')
-    New-Item -ItemType Directory -Path $RunOutputPath -Force | Out-Null
-}
+$resolvedRun = Resolve-RunOutputPath -OutputPathRoot $OutputPath `
+    -ExistingPath (Get-Variable -Name RunOutputPath -ValueOnly -ErrorAction SilentlyContinue)
+$RunOutputPath = $resolvedRun.RunOutputPath
+$RunFileSuffix = $resolvedRun.RunFileSuffix
 Set-LogFilePath -Path (Join-Path $RunOutputPath 'AccountGovernance.log')
-Write-Log "=== 03_ExportEntraUsers started (ImmutableIdMethod: $ImmutableIdMethod) ==="
+Write-Log "=== 03_ExportEntraUsers started (ImmutableIdMethod: $ImmutableIdMethod, IncludeManagerLookup: $IncludeManagerLookup, IncludeSignInActivity: $IncludeSignInActivity) ==="
 
 # --- Connect to Microsoft Graph -----------------------------------------------
+$requiredScopes = @('User.Read.All', 'Directory.Read.All')
+if ($IncludeSignInActivity) { $requiredScopes += 'AuditLog.Read.All' }
+
 Connect-MgGraphWithRequirements `
     -GraphModuleNames @('Microsoft.Graph.Users') `
-    -RequiredScopes @('User.Read.All', 'Directory.Read.All')
+    -RequiredScopes $requiredScopes
 
 # --- Property list ------------------------------------------------------------
 $properties = @(
     "Id", "DisplayName", "GivenName", "Surname",
     "UserPrincipalName", "Mail", "MailNickname", "UserType",
     "OtherMails", "ProxyAddresses", "Identities",
-    "AccountEnabled", "CreatedDateTime", "DeletedDateTime",
+    "AccountEnabled", "ShowInAddressList", "CreatedDateTime", "DeletedDateTime",
     "LastPasswordChangeDateTime", "PasswordPolicies",
     "SignInSessionsValidFromDateTime",
     "ExternalUserState", "ExternalUserStateChangeDateTime",
+    "AgeGroup", "ConsentProvidedForMinor", "LegalAgeGroupClassification",
+    "CreationType",
     "IsResourceAccount", "IsManagementRestricted",
     "Department", "JobTitle", "CompanyName", "EmployeeId", "EmployeeType",
-    "UsageLocation", "AssignedLicenses", "AssignedPlans",
+    "EmployeeHireDate", "EmployeeOrgData",
+    "UsageLocation", "PreferredDataLocation", "AssignedLicenses", "AssignedPlans",
     "OnPremisesSyncEnabled", "OnPremisesLastSyncDateTime",
     "OnPremisesDistinguishedName", "OnPremisesDomainName",
-    "OnPremisesSamAccountName", "OnPremisesImmutableId",
+    "OnPremisesSamAccountName", "OnPremisesUserPrincipalName",
+    "OnPremisesImmutableId",
     "OnPremisesSecurityIdentifier", "OnPremisesProvisioningErrors",
     "OnPremisesExtensionAttributes"
-) -join ","
+)
+if ($IncludeSignInActivity) { $properties += 'SignInActivity' }
+$properties = $properties -join ","
 
 # --- Flatten function ---------------------------------------------------------
 # Multi-value fields are kept as JSON arrays (not semicolon-joined strings) to
 # preserve structure and avoid data corruption when values contain semicolons.
 function Flatten-User ($user, [string]$BucketLabel = $null) {
     $extAttribs = $user.OnPremisesExtensionAttributes
+    $employeeOrg = $user.EmployeeOrgData
+
+    $managerId = $null
+    $managerDisplayName = $null
+    if ($null -ne $user.Manager) {
+        $managerId = $user.Manager.Id
+        if ($null -ne $user.Manager.AdditionalProperties) {
+            $managerDisplayName = $user.Manager.AdditionalProperties['displayName']
+        }
+    }
+
+    # SignInActivity may be absent when $IncludeSignInActivity is $false (it's
+    # not requested in the $select), so read defensively to satisfy StrictMode.
+    $signInActivity = if ($user.PSObject.Properties['SignInActivity']) { $user.SignInActivity } else { $null }
+    $lastSignIn = if ($null -ne $signInActivity) { $signInActivity.LastSignInDateTime }                else { $null }
+    $lastNonInteractiveSignIn = if ($null -ne $signInActivity) { $signInActivity.LastNonInteractiveSignInDateTime }  else { $null }
+    $lastSuccessfulSignIn = if ($null -ne $signInActivity) { $signInActivity.LastSuccessfulSignInDateTime }      else { $null }
 
     [PSCustomObject]@{
-        Bucket                              = $BucketLabel
+        Bucket                           = $BucketLabel
 
         # Core identity
-        Id                                  = $user.Id
-        DisplayName                         = $user.DisplayName
-        UserPrincipalName                   = $user.UserPrincipalName
-        Mail                                = $user.Mail
-        MailNickname                        = $user.MailNickname
-        OtherMails                          = @($user.OtherMails)
-        ProxyAddresses                      = @($user.ProxyAddresses)
-        Identities                          = @($user.Identities | ForEach-Object {
-                                                [PSCustomObject]@{
-                                                    SignInType       = $_.SignInType
-                                                    Issuer          = $_.Issuer
-                                                    IssuerAssignedId = $_.IssuerAssignedId
-                                                }
-                                              })
-        UserType                            = $user.UserType
+        Id                               = $user.Id
+        DisplayName                      = $user.DisplayName
+        GivenName                        = $user.GivenName
+        Surname                          = $user.Surname
+        UserPrincipalName                = $user.UserPrincipalName
+        Mail                             = $user.Mail
+        MailNickname                     = $user.MailNickname
+        OtherMails                       = @($user.OtherMails)
+        ProxyAddresses                   = @($user.ProxyAddresses)
+        Identities                       = @($user.Identities | ForEach-Object {
+                [PSCustomObject]@{
+                    SignInType       = $_.SignInType
+                    Issuer           = $_.Issuer
+                    IssuerAssignedId = $_.IssuerAssignedId
+                }
+            })
+        UserType                         = $user.UserType
 
         # Account state
-        AccountEnabled                      = $user.AccountEnabled
-        IsResourceAccount                   = $user.IsResourceAccount
-        IsManagementRestricted              = $user.IsManagementRestricted
-        CreatedDateTime                     = $user.CreatedDateTime
-        DeletedDateTime                     = $user.DeletedDateTime
-        LastPasswordChangeDateTime          = $user.LastPasswordChangeDateTime
-        PasswordPolicies                    = $user.PasswordPolicies
-        SignInSessionsValidFromDateTime     = $user.SignInSessionsValidFromDateTime
+        AccountEnabled                   = $user.AccountEnabled
+        ShowInAddressList                = $user.ShowInAddressList
+        IsResourceAccount                = $user.IsResourceAccount
+        IsManagementRestricted           = $user.IsManagementRestricted
+        CreatedDateTime                  = $user.CreatedDateTime
+        DeletedDateTime                  = $user.DeletedDateTime
+        LastPasswordChangeDateTime       = $user.LastPasswordChangeDateTime
+        PasswordPolicies                 = $user.PasswordPolicies
+        SignInSessionsValidFromDateTime  = $user.SignInSessionsValidFromDateTime
+        LastSignInDateTime               = $lastSignIn
+        LastNonInteractiveSignInDateTime = $lastNonInteractiveSignIn
+        LastSuccessfulSignInDateTime     = $lastSuccessfulSignIn
 
         # External / guest
-        ExternalUserState                   = $user.ExternalUserState
-        ExternalUserStateChangeDateTime     = $user.ExternalUserStateChangeDateTime
+        ExternalUserState                = $user.ExternalUserState
+        ExternalUserStateChangeDateTime  = $user.ExternalUserStateChangeDateTime
+
+        # Compliance / age + consent (GDPR Art. 8 / education tenant)
+        AgeGroup                         = $user.AgeGroup
+        ConsentProvidedForMinor          = $user.ConsentProvidedForMinor
+        LegalAgeGroupClassification      = $user.LegalAgeGroupClassification
+        CreationType                     = $user.CreationType
 
         # Organisation
-        Department                          = $user.Department
-        JobTitle                            = $user.JobTitle
-        CompanyName                         = $user.CompanyName
-        EmployeeId                          = $user.EmployeeId
-        EmployeeType                        = $user.EmployeeType
+        Department                       = $user.Department
+        JobTitle                         = $user.JobTitle
+        CompanyName                      = $user.CompanyName
+        EmployeeId                       = $user.EmployeeId
+        EmployeeType                     = $user.EmployeeType
+        EmployeeHireDate                 = $user.EmployeeHireDate
+        Division                         = $employeeOrg.Division
+        CostCenter                       = $employeeOrg.CostCenter
+        ManagerId                        = $managerId
+        ManagerDisplayName               = $managerDisplayName
 
         # Licensing
-        UsageLocation                       = $user.UsageLocation
-        AssignedLicenses                    = @($user.AssignedLicenses | ForEach-Object { $_.SkuId })
-        AssignedPlans                       = @($user.AssignedPlans | ForEach-Object {
-                                                [PSCustomObject]@{
-                                                    Service         = $_.Service
-                                                    ServicePlanId   = $_.ServicePlanId
-                                                    CapabilityStatus = $_.CapabilityStatus
-                                                }
-                                              })
+        UsageLocation                    = $user.UsageLocation
+        PreferredDataLocation            = $user.PreferredDataLocation
+        AssignedLicenses                 = @($user.AssignedLicenses | ForEach-Object { $_.SkuId })
+        AssignedPlans                    = @($user.AssignedPlans | ForEach-Object {
+                [PSCustomObject]@{
+                    Service          = $_.Service
+                    ServicePlanId    = $_.ServicePlanId
+                    CapabilityStatus = $_.CapabilityStatus
+                    AssignedDateTime = $_.AssignedDateTime
+                }
+            })
 
         # On-premises sync
-        OnPremisesSyncEnabled               = $user.OnPremisesSyncEnabled
-        OnPremisesLastSyncDateTime          = $user.OnPremisesLastSyncDateTime
-        OnPremisesDistinguishedName         = $user.OnPremisesDistinguishedName
-        OnPremisesDomainName                = $user.OnPremisesDomainName
-        OnPremisesSamAccountName            = $user.OnPremisesSamAccountName
-        OnPremisesImmutableId               = $user.OnPremisesImmutableId
-        OnPremisesSecurityIdentifier        = $user.OnPremisesSecurityIdentifier
-        OnPremisesProvisioningErrors        = @($user.OnPremisesProvisioningErrors | ForEach-Object {
-                                                [PSCustomObject]@{
-                                                    Category              = $_.Category
-                                                    OccurredDateTime      = $_.OccurredDateTime
-                                                    PropertyCausingError  = $_.PropertyCausingError
-                                                    Value                 = $_.Value
-                                                }
-                                              })
+        OnPremisesSyncEnabled            = $user.OnPremisesSyncEnabled
+        OnPremisesLastSyncDateTime       = $user.OnPremisesLastSyncDateTime
+        OnPremisesDistinguishedName      = $user.OnPremisesDistinguishedName
+        OnPremisesDomainName             = $user.OnPremisesDomainName
+        OnPremisesSamAccountName         = $user.OnPremisesSamAccountName
+        OnPremisesUserPrincipalName      = $user.OnPremisesUserPrincipalName
+        OnPremisesImmutableId            = $user.OnPremisesImmutableId
+        OnPremisesSecurityIdentifier     = $user.OnPremisesSecurityIdentifier
+        OnPremisesProvisioningErrors     = @($user.OnPremisesProvisioningErrors | ForEach-Object {
+                [PSCustomObject]@{
+                    Category             = $_.Category
+                    OccurredDateTime     = $_.OccurredDateTime
+                    PropertyCausingError = $_.PropertyCausingError
+                    Value                = $_.Value
+                }
+            })
 
         # Extension attributes (flattened from nested object)
-        ExtensionAttribute1                 = $extAttribs.ExtensionAttribute1
-        ExtensionAttribute2                 = $extAttribs.ExtensionAttribute2
-        ExtensionAttribute3                 = $extAttribs.ExtensionAttribute3
-        ExtensionAttribute4                 = $extAttribs.ExtensionAttribute4
-        ExtensionAttribute5                 = $extAttribs.ExtensionAttribute5
-        ExtensionAttribute6                 = $extAttribs.ExtensionAttribute6
-        ExtensionAttribute7                 = $extAttribs.ExtensionAttribute7
-        ExtensionAttribute8                 = $extAttribs.ExtensionAttribute8
-        ExtensionAttribute9                 = $extAttribs.ExtensionAttribute9
-        ExtensionAttribute10                = $extAttribs.ExtensionAttribute10
-        ExtensionAttribute11                = $extAttribs.ExtensionAttribute11
-        ExtensionAttribute12                = $extAttribs.ExtensionAttribute12
-        ExtensionAttribute13                = $extAttribs.ExtensionAttribute13
-        ExtensionAttribute14                = $extAttribs.ExtensionAttribute14
-        ExtensionAttribute15                = $extAttribs.ExtensionAttribute15
+        ExtensionAttribute1              = $extAttribs.ExtensionAttribute1
+        ExtensionAttribute2              = $extAttribs.ExtensionAttribute2
+        ExtensionAttribute3              = $extAttribs.ExtensionAttribute3
+        ExtensionAttribute4              = $extAttribs.ExtensionAttribute4
+        ExtensionAttribute5              = $extAttribs.ExtensionAttribute5
+        ExtensionAttribute6              = $extAttribs.ExtensionAttribute6
+        ExtensionAttribute7              = $extAttribs.ExtensionAttribute7
+        ExtensionAttribute8              = $extAttribs.ExtensionAttribute8
+        ExtensionAttribute9              = $extAttribs.ExtensionAttribute9
+        ExtensionAttribute10             = $extAttribs.ExtensionAttribute10
+        ExtensionAttribute11             = $extAttribs.ExtensionAttribute11
+        ExtensionAttribute12             = $extAttribs.ExtensionAttribute12
+        ExtensionAttribute13             = $extAttribs.ExtensionAttribute13
+        ExtensionAttribute14             = $extAttribs.ExtensionAttribute14
+        ExtensionAttribute15             = $extAttribs.ExtensionAttribute15
     }
 }
 
@@ -161,7 +207,12 @@ Write-Log "Fetching all users from Entra (may take 20+ minutes in large tenants)
 $startTime = Get-Date
 
 $allUsers = Invoke-GraphOperationWithRetry -OperationName 'Get-MgUser full tenant listing' -Operation {
-    Get-MgUser -All -Property $properties -ErrorAction Stop
+    if ($IncludeManagerLookup) {
+        Get-MgUser -All -Property $properties -ExpandProperty Manager -ErrorAction Stop
+    }
+    else {
+        Get-MgUser -All -Property $properties -ErrorAction Stop
+    }
 }
 
 $elapsed = (Get-Date) - $startTime
@@ -171,9 +222,10 @@ Write-Log "Fetch complete: $($allUsers.Count) total users in $([int]$elapsed.Tot
 Write-Log "Processing Bucket 1 - Actively synced..."
 $synced = $allUsers | Where-Object { $_.OnPremisesSyncEnabled -eq $true }
 Write-Log "  Count: $($synced.Count)"
+$syncedFile = "Entra_SyncedUsers_$RunFileSuffix.ndjson"
 $synced | ForEach-Object { Flatten-User $_ "ActivelySynced" | ConvertTo-Json -Compress -Depth 5 } |
-    Out-File (Join-Path $RunOutputPath 'Entra_SyncedUsers.ndjson') -Encoding UTF8
-Write-Log "  Written -> Entra_SyncedUsers.ndjson"
+Out-File (Join-Path $RunOutputPath $syncedFile) -Encoding UTF8
+Write-Log "  Written -> $syncedFile"
 
 # --- Bucket 2: Previously synced ----------------------------------------------
 Write-Log "Processing Bucket 2 - Previously synced..."
@@ -181,9 +233,10 @@ $prevSynced = $allUsers | Where-Object {
     $_.OnPremisesSyncEnabled -ne $true -and $_.OnPremisesImmutableId -ne $null
 }
 Write-Log "  Count: $($prevSynced.Count)"
+$prevSyncedFile = "Entra_PreviouslySynced_$RunFileSuffix.ndjson"
 $prevSynced | ForEach-Object { Flatten-User $_ "PreviouslySynced" | ConvertTo-Json -Compress -Depth 5 } |
-    Out-File (Join-Path $RunOutputPath 'Entra_PreviouslySynced.ndjson') -Encoding UTF8
-Write-Log "  Written -> Entra_PreviouslySynced.ndjson"
+Out-File (Join-Path $RunOutputPath $prevSyncedFile) -Encoding UTF8
+Write-Log "  Written -> $prevSyncedFile"
 
 # --- Bucket 3: Cloud only -----------------------------------------------------
 Write-Log "Processing Bucket 3 - Cloud only..."
@@ -191,18 +244,20 @@ $cloudOnly = $allUsers | Where-Object {
     $_.OnPremisesSyncEnabled -ne $true -and $_.OnPremisesImmutableId -eq $null
 }
 Write-Log "  Count: $($cloudOnly.Count)"
+$cloudOnlyFile = "Entra_CloudOnly_$RunFileSuffix.ndjson"
 $cloudOnly | ForEach-Object { Flatten-User $_ "CloudOnly" | ConvertTo-Json -Compress -Depth 5 } |
-    Out-File (Join-Path $RunOutputPath 'Entra_CloudOnly.ndjson') -Encoding UTF8
-Write-Log "  Written -> Entra_CloudOnly.ndjson"
+Out-File (Join-Path $RunOutputPath $cloudOnlyFile) -Encoding UTF8
+Write-Log "  Written -> $cloudOnlyFile"
 
 # --- All users (combined) -----------------------------------------------------
 # Concatenate the three bucket files — no re-processing, Bucket field identifies origin
 Write-Log "Writing combined export..."
-Get-Content (Join-Path $RunOutputPath 'Entra_SyncedUsers.ndjson'),
-            (Join-Path $RunOutputPath 'Entra_PreviouslySynced.ndjson'),
-            (Join-Path $RunOutputPath 'Entra_CloudOnly.ndjson') |
-    Out-File (Join-Path $RunOutputPath 'Entra_AllUsers.ndjson') -Encoding UTF8
-Write-Log "  Written -> Entra_AllUsers.ndjson"
+$allUsersFile = "Entra_AllUsers_$RunFileSuffix.ndjson"
+Get-Content (Join-Path $RunOutputPath $syncedFile),
+(Join-Path $RunOutputPath $prevSyncedFile),
+(Join-Path $RunOutputPath $cloudOnlyFile) |
+Out-File (Join-Path $RunOutputPath $allUsersFile) -Encoding UTF8
+Write-Log "  Written -> $allUsersFile"
 
 # --- Summary ------------------------------------------------------------------
 $check = $synced.Count + $prevSynced.Count + $cloudOnly.Count

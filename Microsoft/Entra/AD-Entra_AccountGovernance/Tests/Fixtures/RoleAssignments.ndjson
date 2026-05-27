@@ -1,0 +1,4 @@
+{"Id":"ra-1","RoleDefinitionId":"role-ga","PrincipalId":"u-alice","PrincipalType":"User","PrincipalDisplayName":"Alice","PrincipalUserPrincipalName":"alice@contoso.com","DirectoryScopeId":"/","AppScopeId":null,"AssignmentType":"Active"}
+{"Id":"ra-2","RoleDefinitionId":"role-ua","PrincipalId":"u-bob","PrincipalType":"User","PrincipalDisplayName":"Bob","PrincipalUserPrincipalName":"bob@contoso.com","DirectoryScopeId":"/","AppScopeId":null,"AssignmentType":"Active"}
+{"Id":"ra-3","RoleDefinitionId":"role-ga","PrincipalId":"g-pag","PrincipalType":"Group","PrincipalDisplayName":"GA-PAG","PrincipalUserPrincipalName":null,"DirectoryScopeId":"/","AppScopeId":null,"AssignmentType":"Active"}
+{"Id":"ra-4","RoleDefinitionId":"role-helpdesk","PrincipalId":"sp-1","PrincipalType":"ServicePrincipal","PrincipalDisplayName":"DeployBot","PrincipalUserPrincipalName":null,"DirectoryScopeId":"/","AppScopeId":null,"AssignmentType":"Active"}

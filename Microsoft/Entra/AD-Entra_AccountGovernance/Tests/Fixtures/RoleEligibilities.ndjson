@@ -1,0 +1,1 @@
+{"Id":"re-1","RoleDefinitionId":"role-ua","PrincipalId":"u-carol","PrincipalType":"User","PrincipalDisplayName":"Carol","PrincipalUserPrincipalName":"carol@external.com","DirectoryScopeId":"/","AppScopeId":null,"AssignmentType":"Eligible","StartDateTime":"2026-01-01T00:00:00Z","EndDateTime":null,"MemberType":"Direct"}

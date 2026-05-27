@@ -1,0 +1,2 @@
+{"Id":"g-pag","DisplayName":"GA-PAG","Description":"Privileged Access Group for Global Admin","MailEnabled":false,"SecurityEnabled":true,"IsAssignableToRole":true,"GroupTypes":[],"OnPremisesSyncEnabled":null}
+{"Id":"g-nested","DisplayName":"Nested-Group","Description":"Nested under GA-PAG","MailEnabled":false,"SecurityEnabled":true,"IsAssignableToRole":false,"GroupTypes":[],"OnPremisesSyncEnabled":null}

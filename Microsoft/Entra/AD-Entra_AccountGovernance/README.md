@@ -144,7 +144,7 @@ By default `Get-ADUser` returns only a base set of attributes. The `-Properties 
 $ImmutableIdMethod = "ObjectGUID"
 ```
 
-**ImmutableId calculation (`04_ExportADUsers.ps1`):**
+**ImmutableId calculation (`06_ExportADUsers.ps1`):**
 ```powershell
 [System.Convert]::ToBase64String($user.ObjectGUID.ToByteArray())
 ```
@@ -169,7 +169,7 @@ $ImmutableIdMethod = "ObjectGUID"
 $ImmutableIdMethod = "mS-DS-ConsistencyGuid"
 ```
 
-**Key difference for scripts 04 and 05:** `04_ExportADUsers.ps1` reads `mS-DS-ConsistencyGuid` instead of `ObjectGUID` and Base64-encodes it. Users where this attribute is `$null` will have a `$null` ImmutableId — flag these as potential sync mismatches worth investigating.
+**Key difference for scripts 06 and 07:** `06_ExportADUsers.ps1` reads `mS-DS-ConsistencyGuid` instead of `ObjectGUID` and Base64-encodes it. Users where this attribute is `$null` will have a `$null` ImmutableId — flag these as potential sync mismatches worth investigating.
 
 ---
 
@@ -193,11 +193,11 @@ $Forests = @("corp.local", "subsidiary.com")
 $ImmutableIdMethod = "mS-DS-ConsistencyGuid"  # Recommended for multi-forest
 ```
 
-The orchestrator (`Run-AccountGovernanceAudit.ps1`) runs `04_ExportADUsers.ps1` once per forest automatically, producing separate output files (`AD_AllUsers_corp.local.ndjson`, `AD_AllUsers_subsidiary.com.ndjson`). Script 05 unions them before cross-referencing.
+The orchestrator (`Run-AccountGovernanceAudit.ps1`) runs `06_ExportADUsers.ps1` once per forest automatically, producing separate output files (`AD_AllUsers_corp.local.ndjson`, `AD_AllUsers_subsidiary.com.ndjson`). Script 07 unions them before cross-referencing.
 
 To export a specific forest manually:
 ```powershell
-.\04_ExportADUsers.ps1 -ForestName "corp.local" -Server "dc01.corp.local"
+.\06_ExportADUsers.ps1 -ForestName "corp.local" -Server "dc01.corp.local"
 ```
 
 ---
@@ -286,11 +286,15 @@ User properties can contain newline characters and special characters that corru
 | Previously synced | `OnPremisesSyncEnabled -ne $true` AND `OnPremisesImmutableId -ne $null` |
 | Cloud-only | `OnPremisesSyncEnabled -ne $true` AND `OnPremisesImmutableId -eq $null` |
 
+### Manager lookup
+
+Each user record carries `ManagerId` and `ManagerDisplayName` by default — the bulk fetch uses `$expand=manager` to attach the manager directoryObject inline, enabling manager-by-admin reporting and attestation flows in step 08. This roughly doubles the response payload from Graph. Set `$IncludeManagerLookup = $false` in `00_Config.ps1` to skip; the two manager fields will emit as `$null` but the schema stays stable.
+
 ---
 
 ## Step 4 — Export AD Users
 
-Run **`04_ExportADUsers.ps1`** on a domain-joined machine with the RSAT AD module.
+Run **`06_ExportADUsers.ps1`** on a domain-joined machine with the RSAT AD module.
 
 This script exports all AD user accounts and calculates each user's ImmutableId using the method configured in `$ImmutableIdMethod` (`00_Config.ps1`). The ImmutableId is used in Step 5 to match AD users against their Entra counterparts.
 
@@ -302,12 +306,100 @@ For **multi-forest environments** (Setup 3): use the orchestrator or run manuall
 
 ## Step 5 — Cross-reference and Analysis
 
-Run **`05_CrossReference.ps1`** from any machine with access to the NDJSON output files.
+Run **`07_CrossReference.ps1`** from any machine with access to the NDJSON output files.
 
 - Cross-reference AD export against Entra buckets by ImmutableId
 - Identify AD accounts missing from Entra entirely (Bucket 4: AD-only)
 - Flag Entra synced accounts with `OnPremisesProvisioningErrors`
 - Output: `AD_OnlyAccounts.ndjson` and `Entra_ProvisioningErrors.ndjson`
+
+---
+
+## Permissions Audit (scripts 04 and 05)
+
+Scripts `04_ExportEntraRoles.ps1` and `05_ExportEntraGroups.ps1` run between the Entra user export and the AD export, capturing **who has privileges in the tenant** so that admin accounts and group memberships can be reported on alongside the sync data.
+
+The orchestrator runs both automatically. Each can be skipped independently with `-SkipRoleExport` / `-SkipGroupExport`.
+
+### Script 04 — Entra role export
+
+Captures directory role definitions and assignments:
+
+| File | Contents |
+|------|---------|
+| `Entra_RoleDefinitions.ndjson` | All directory role definitions (built-in + custom), including their `RolePermissions` |
+| `Entra_RoleAssignments.ndjson` | Active role assignments. Each row carries `PrincipalType` (User / Group / ServicePrincipal), `DirectoryScopeId`, `AppScopeId`, and `AssignmentType = "Active"` |
+| `Entra_RoleEligibilities.ndjson` | PIM-eligible role assignments. Same shape as active, plus `StartDateTime`, `EndDateTime`, `MemberType`, and `AssignmentType = "Eligible"`. Empty file on tenants without Entra ID P2 |
+
+**PIM behaviour:** when `$IncludePimEligibilities = $false` in `00_Config.ps1`, the eligibility query is skipped entirely. When `$true` (default), the script catches license/permission errors from the PIM endpoint and writes an empty eligibilities file rather than aborting the run — so a tenant without P2 still completes the pipeline cleanly.
+
+**Required Graph scopes:** `RoleManagement.Read.Directory`, `Directory.Read.All`.
+
+### Script 05 — Entra group export
+
+Captures all groups (security, M365, dynamic, distribution) plus direct membership and ownership:
+
+| File | Contents |
+|------|---------|
+| `Entra_Groups.ndjson` | All groups with type flags (`SecurityEnabled`, `MailEnabled`, `GroupTypes`, `IsAssignableToRole`), membership rules for dynamic groups, on-prem sync info |
+| `Entra_GroupMembers.ndjson` | One row per (group, member). Direct membership only — nested expansion happens in step 08 |
+| `Entra_GroupOwners.ndjson` | One row per (group, owner) |
+
+**Throttling:** group enumeration is the heaviest pipeline step. Members and owners are fetched via `$expand=members,owners` on the bulk group query, with a fallback per-group call when the expanded collection looks paginated (≥20 entries — Graph's default page size). Role-assignable groups (PAGs) are processed first so the most security-relevant data is on disk even if a long run is interrupted. Progress is logged every 250 groups with elapsed time and ETA.
+
+**Token refresh:** `Invoke-GraphOperationWithRetry` keeps long runs alive across the default 60-minute Graph access-token TTL using a layered approach:
+
+1. **Proactive** — `GraphConnection.psm1` records the acquisition time of every successful `Connect-MgGraph`. Before each call, the retry wrapper checks the tracked age; once it reaches 50 minutes (configurable via `-ProactiveRefreshThresholdMinutes`) it disconnects and reconnects with the same scopes before invoking the operation. The 10-minute buffer is comfortably below TTL.
+2. **Reactive** — if a call still fails with a 401 / auth-expiry error (e.g. token rotated mid-flight, or pre-existing session whose age was not tracked), the wrapper performs a one-shot reconnect and retries.
+3. **Genuine-401 escalation** — if an auth-expiry error recurs immediately after a refresh attempt, the wrapper does NOT loop. The error is treated as a genuine 401 (revoked consent, lost permission, broken trust) and rethrown so it surfaces clearly.
+
+**Required Graph scopes:** `Group.Read.All`, `GroupMember.Read.All`, `Directory.Read.All`.
+
+### Script 08 — Admin summary derivation
+
+Joins users × roles × group memberships into the file top management actually wants. Pure transformation — no Graph calls.
+
+| File | Contents |
+|------|---------|
+| `Entra_EffectiveAdmins.ndjson` | One row per (user, role, assignment-path). A user may appear multiple times when held by Direct *and* via a role-assignable group. Each row carries `UserType`, `OnPremisesSyncEnabled`, `AccountEnabled`, `LastSignInDateTime`, `IsStale`, `Scope`, `AssignmentType` (Active/Eligible). |
+| `Entra_NonUserRoleHolders.ndjson` | Service principals and managed identities holding directory roles. Reported separately so the user-facing admin file stays clean. |
+| `Entra_AdminSummary.json` | Aggregate counts: total admin rows / unique users, Active vs Eligible, Direct vs ViaGroup, synced vs cloud-only, guest admins, stale admins (using `$StaleAdminThresholdDays`), counts by role name. |
+
+**Effective admins via groups:** when a directory role is assigned to a role-assignable group (a "PAG"), this step walks group nesting transitively to surface the actual users. `AssignmentPath` reads `ViaGroup:<GroupDisplayName>` so the lineage is traceable.
+
+**No Graph scopes needed.** The script consumes the NDJSON files produced by steps 03/04/05.
+
+---
+
+## Testing
+
+The join logic in `08_BuildAdminSummary.ps1` is covered by Pester 5 tests under `Tests\`:
+
+```text
+Tests\
+    08_BuildAdminSummary.Tests.ps1
+    Fixtures\
+        Users.ndjson          (5 users: synced/cloud-only/guest mix)
+        Roles.ndjson          (Global Admin, User Admin, custom role)
+        RoleAssignments.ndjson (direct user, direct group, direct SP)
+        RoleEligibilities.ndjson (one PIM-eligible user)
+        Groups.ndjson         (one role-assignable group, one nested)
+        GroupMembers.ndjson   (nested membership chain)
+```
+
+The tests cover Direct vs ViaGroup vs nested-group vs ServicePrincipal, dedup-but-keep-both for users with both paths, PIM eligibility, stale-admin threshold, and empty-input safety.
+
+The script exposes `Build-AdminSummary` as a function and gates its main I/O block behind a global sentinel (`$BuildAdminSummary_TestMode`), so tests dot-source the script without triggering file I/O and call the function directly with fixture arrays.
+
+**Running the tests** (Pester 5+ required):
+
+```powershell
+Install-Module Pester -Scope CurrentUser -MinimumVersion 5.0.0
+Import-Module Pester
+Invoke-Pester .\Microsoft\Entra\AD-Entra_AccountGovernance\Tests\
+```
+
+The data-extraction scripts (03/04/05/06) are not unit-tested — they are thin wrappers over Graph and AD calls where mocking the world produces little value compared to a smoke run against a dev tenant.
 
 ---
 
@@ -392,10 +484,14 @@ For unattended Graph auth, wrap the orchestrator call in a launcher script that 
 | `README.md` | This file |
 | `ENVIRONMENT.md` | Environment-specific reference values and configuration template |
 | `00_Config.ps1` | Shared configuration — edit before running any scripts |
-| `Run-AccountGovernanceAudit.ps1` | **Orchestrator** — runs scripts 03-06 in sequence |
+| `Run-AccountGovernanceAudit.ps1` | **Orchestrator** — runs the numbered scripts in sequence |
 | `01_EntraConnect_Config.ps1` | Query Entra Connect server configuration (run on Connect server) |
 | `02_SyncRules.ps1` | Export and inspect sync rules (run on Connect server) |
 | `03_ExportEntraUsers.ps1` | Fetch all Entra users and split into audit buckets |
-| `04_ExportADUsers.ps1` | Export all AD users for cross-reference (`-ForestName`, `-Server` params) |
-| `05_CrossReference.ps1` | Cross-reference AD and Entra exports |
-| `06_ConvertToJson.ps1` | Convert NDJSON files to JSON arrays for Excel/Power Query |
+| `04_ExportEntraRoles.ps1` | Export directory role definitions, active assignments, and PIM eligibilities |
+| `05_ExportEntraGroups.ps1` | Export all groups with direct members and owners |
+| `06_ExportADUsers.ps1` | Export all AD users for cross-reference (`-ForestName`, `-Server` params) |
+| `07_CrossReference.ps1` | Cross-reference AD and Entra exports |
+| `08_BuildAdminSummary.ps1` | Derive effective admins, non-user role holders, and aggregate admin summary |
+| `09_ConvertToJson.ps1` | Convert NDJSON files to JSON arrays for Excel/Power Query |
+| `Tests\` | Pester 5 tests + fixtures for `08_BuildAdminSummary.ps1` |
